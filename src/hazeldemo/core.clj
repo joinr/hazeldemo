@@ -18,6 +18,9 @@
 ;;looks for jobs topic
 (defn my-object [k] (-> (my-objects) (get k)))
 
+(defn destroy! [k]
+  (when-let [obj (my-object k)]
+    (.destroy obj)))
 ;;let's create a message topic...
 ;;it's possible we are a work node joining a pre-existing
 ;;cluster, so we want to link to the existing topic if it already exists.
@@ -28,26 +31,49 @@
 ;;jobs, results, and log
 ;;we probably want log to be limited or have something dumping
 ;;to disk.
+;;So our basic paradigm will be:
+;;we have a jobs queue.  We also have a work topic.
+;;When we submit work to the queue, one or more items are pushed onto
+;;the queue and we publish a notification to the work topic.
+;;Workers are subscribed to the work topic.
+;;Workers handle work topic notices by going to drain the queue.
+;;They check for jobs on the queue, pull a job, submit a result,
+;;and look to see if more work remains, repeating until the queue
+;;is empty.
+
 (def jobs
   (or (my-object :jobs)
-      (ch/hz-reliable-topic :jobs)))
+      (ch/hz-queue :jobs)))
 
 (def results
   (or (my-object :results)
-      (ch/hz-reliable-topic :results)))
+      (ch/hz-queue :results)))
 
 (def log
   (or (my-object :log)
       (ch/hz-reliable-topic :log)))
 
+(ch/add-message-listener log (fn [msg] (println [:LOG msg])))
+
 (defn ping [] (println "ping!"))
 
-(defn do-job [{:keys [job id args]}]
-  (case job
-    :add [id (apply + args)]
-    :ping (ping)
-    nil))
+(def ^java.util.concurrent.TimeUnit ms java.util.concurrent.TimeUnit/MILLISECONDS)
 
+;;we want to loop through the queue doing work and pushing results until
+;;thte queue is empty.  take will block, poll will timeout.
+(defn poll-queue!
+  ([f timeout ^java.util.concurrent.BlockingQueue in ]
+   (when-let [job (.poll in timeout ms)]
+     (do (f job)
+         (recur  f timeout in))))
+  ([f in] (poll-queue! f 2000 in )))
+
+(defn do-job [{:keys [job id args :as data]}]
+  (case job
+    :add  [id (apply + args)]
+    :ping (ping)
+    :log  (ch/publish log data)
+    nil))
 
 (def this-ns *ns*)
 
