@@ -1,0 +1,3 @@
+{:collector {:refresh-interval 4}     ;; refresh cluster stats every 4 seconds
+ :hz-client {:hosts ["127.0.0.1"]     ;; hazelcast cluster hosts/ips
+             :cluster-name "dev"}}    ;; cluster name to connect to

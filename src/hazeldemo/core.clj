@@ -2,9 +2,7 @@
   (:require [chazel.core :as ch]
             [hazeldemo.utils :as u]))
 
-(ch/cluster-of 1 :name "dev")
-
-(def me (first (ch/all-instances)))
+(defonce me (first (ch/cluster-of 1 :name "dev")))
 
 (def ^:dynamic *cluster* me)
 
@@ -116,7 +114,7 @@
 
 (def results
   (or (get-object :results)
-      (ch/hz-queue :results)))
+      (ch/hz-map :results)))
 
 (def log
   (or (get-object :log)
@@ -159,26 +157,22 @@
 ;;could consolidate entry listener on client, have a response map (I think
 ;;Ammit did something like this).
 
-(def ^:dynamic *pending* (ref {}))
-
-;;naiveley, it would have a map of (response-id -> promise)
+;;naively, it would have a map of (response-id -> promise)
 ;;Then we have a single listener:
 
 ;;results is needed....
 (defn handle-response [^java.util.Map m pending k v ov]
   ;;if it's a pending response, we deliver it.
   (dosync
-   (when-let [kv (@pending k)]s
-     (let [p (val kv)]
+   (when-let [p (@pending k)]
        (do (deliver p v)
-           (.remove results k)
-           (alter pending dissoc k))))))
+           (.remove m k)
+           (alter pending dissoc k)))))
 
-(defn ->reponse-listener
+(defn ->response-listener
   ([m pending]
-   (ch/entry-updated-listener
-    (fn [k v ov] (handle-response m pending k v ov))))
-  ([m] (->reponse-listener *pending*)))
+   (ch/entry-added-listener
+    (fn [k v ov] (handle-response m pending k v ov)))))
 
 ;;so we need to plumb ->listener to results 1x and then it
 ;;acts on every entry.  Another option is to create many singleton maps
@@ -197,33 +191,6 @@
      (throw (ex-info "cannot find jobs queue on source" {:source source :args m}))))
   ([data] (request-job! *cluster* data)))
 
-(defn invoke
-  ([source f args]
-   (dosync
-    (let [some-id (uuid)
-          result  (promise)]
-      (request-job! source {:id some-id :data {:type :invoke :args [f args]} :response some-id})
-      (alter *pending* assoc some-id result)
-      result)))
-  ([f args] (invoke *cluster* f args)))
-
-;;this works fine.
-#_
-(with-client [tmp]
-  (let [log (get-object :log)
-        id (ch/add-message-listener log (fn [msg] (println "I ALSO SEE YOU!" msg)))]
-    (ch/publish log "HAHA")
-    (Thread/sleep 100) ;;this is janky, we need a response or timeout to shutdown.
-    (ch/remove-message-listener log id)))
-
-;;equivalent
-#_
-(with-client [tmp]
-  (let [l (get-object :log)]
-    (with-message-listeners l
-      [hello (fn [msg] (println ["HELLO FROM TEMPORARY!" msg]))]
-      (ch/publish l "world")
-      (Thread/sleep 100))))
 
 ;;we can wrap this up in a convenience macro.
 ;;when you want to run a bunch of computations on the cluster...
@@ -247,49 +214,46 @@
      ::empty))
   ([f in] (poll-queue!! f 2000 in)))
 
+;;our jobs are of the form
+;;{:id str :data {:keys [type args response]} :response str}
+
+;; {:id "87f8a1fb-74e8-4b3d-93d7-8eb87864518b",
+;;  :data {:type :invoke,
+;;         :args [clojure.core/+ [1 2]]},
+;;  :response "87f8a1fb-74e8-4b3d-93d7-8eb87864518b"}
+
 ;;a dumb message handler.
-(defn do-job [{:keys [job id args :as data]}]
-  (case job
-    :add    [id (apply + args)]
-    :ping   (println "ping!")
-    :log    (ch/publish log data)s
-    :invoke (let [[fname & args] args]
-              (try (apply (u/as-function fname) args)
-                   (catch Exception e e)))
-    nil))
+(defn do-job [{:keys [id data response] :as job}]
+  (let [{:keys [type args]} data
+        res   (case (data :type)
+                :add    (apply + args)
+                :ping   (println "ping!")
+                :log    (ch/publish log args)
+                :invoke (let [[fname  params] args]
+                          (try (apply (u/as-function fname) params)
+                               (catch Exception e e))))]
+        (when response
+          (.set ^java.util.Map results response res))
+        res))
+
+;;hazeldemo.core> (do-job {:id "blah" :data {:type :invoke :args ["clojure.core/+" 1 2 3]}})
+;;6
 
 ;;we want to listen to the arrived topic and if any jobs have arrived
 ;;and we are not working, go drain the queue.
 
 (def work-state  (atom nil))
-(defn await-jobs!! [handler timeout in]
-  (if-not @work-state ;;not working yet.
-    (let [_   (reset! work-state ::working)
-          res (poll-queue!! timeout handler in)
-          _   (reset! work-state nil)]
-      res)))
+(defn await-jobs!!
+  ([handler timeout in]
+   (if-not @work-state ;;not working yet.
+     (let [_   (reset! work-state ::working)
+           res (poll-queue!! timeout handler in)
+           _   (reset! work-state nil)]
+       res)))
+  ([timeout in] (await-jobs!! do-job timeout in))
+  ([in]  (await-jobs!! do-job 500 in))
+  ([]    (await-jobs!! do-job 500 jobs)))
 
 
-;;we probably want to go with the async/sync api that core.async established...
-;;e.g. !! is sync.
-(defn submit-work!! [job]
-  (do (.put jobs job)  ;;this may block...
-      (ch/publish arrived :new-work)))
-
-
-;;now a worker definition.
-;;worker wants to listen to arrived for new-work.
-;;worker wants to await-jobs from jobs queue.
-;;so we handle arrived messages by awaiting jobs.
-;;make it idempotent so multiple jobs are ignored.
-
-(def this-ns *ns*)
-
-(defn interpret [args]
-  (binding [*ns* this-ns]
-    (eval (read-string args))))
-
-
-#_
-(defn invoke-all [& args]
-  (.executeOnAllMembers exec-svc (Rtask. fun)))
+;;we want an api function start-workers that will
+;;setup a work queue handling responses on the cluster.
