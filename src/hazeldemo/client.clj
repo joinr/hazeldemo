@@ -210,3 +210,99 @@
 ;;likely with the map/listener implementation of promises used to indicate
 ;;channel closure or otherwise.  Or use some sentinel value to indicate
 ;;closure and rely on the client/consumer to remove the channel when it's done.
+
+;;create or acquire a named queue on the cluster.
+;;by default it will be unbounded.
+;;if no name is supplied, make a uuid and register it as the queue.
+;;add the name to the open-channels map.
+;;the channel semantics queue-side are implemented using
+;;the open-channels map to indicate whether queue can have items
+;;pushed to it (closed items are fine)
+
+;;When a queue is closed, we add the the sentinel :queue/closed
+;;as the last item, then remove the queue from the open-channels map.
+
+;;queues that are both closed and empty are deleted on access of the
+;;sentinel (by the calling process)
+
+
+;;start a go block that pulls items from the queue
+;;it's possible that the local client has a reference to a datstructure
+;;that does not exist anymore.  Need to deal with that.
+
+(def +closed+ :queue/closed)
+(defn acquire-queue [source id]
+  (if-let [obj (core/get-object source id)]
+    obj
+    (let [q (ch/hz-queue id source)
+          ^java.util.Map
+          open-channels (or (core/get-object source :open-channels)
+                            (ch/hz-map :open-channels source))
+          _ (.put open-channels id)]
+      q)))
+
+;;acquire a channel that is fed from a blocking queue on the cluster.
+(defn cluster-channel-out [source id]
+  (let [^java.util.concurrent.BlockingQueue q      (acquire-queue source id)
+        out    (chan Long/MAX_VALUE) ;;temporary, want to have caller configure
+        worker (future (loop []
+                         (if-let [v (.take q)] ;;blocks.
+                           (if-not (identical? v +closed+)
+                             ;;put the value on the channel
+                             (do (>!! out v)
+                                 (recur))
+                             ;;delete the queue, stop working.
+                             (do (core/destroy! source id)
+                                 (a/close! out))))))]
+    ;;if we close out before worker, then we should stop the thread.
+    out))
+
+;;returns a clojure channel where puts trigger items being copied to the
+;;remote queue on the cluster (simulating a distributed channel).
+;;core.asyn semantics for closing the channel apply; if in is closed,
+;;then the corresponding queue "channel" is closed as well. once
+;;elements from the cluster are drained (from a corresponding out
+;;channel), then the queue is deleted from the cluster.
+(defn cluster-channel-in
+  ([source id xf]
+  (let [^java.util.concurrent.BlockingQueue q      (acquire-queue source id)
+        in  (if xf
+              (a/chan Long/MAX_VALUE xf)
+              (a/chan Long/MAX_VALUE))
+        worker (future (loop []
+                         (if-let [v (<!! in)] ;;blocks.
+                           ;;put the value on queue.
+                           (do (.put q v)
+                               (recur))
+                           ;;if in is closed, we stop pulling.
+                           ;;queue is no longer open either, but
+                           ;;may have elements remaining to be drained.
+                           (let [_ (.put q +closed+)
+                                 m (core/get-object source :open-channels)]
+                             (.remove m id)))))]
+    in))
+  ([source id] (cluster-channel-in source id nil)))
+
+
+;;like invoke, except we submit jobs and indicate the result should be
+;;enqueued onto the target.
+(defn invoke-send
+  ([source id f args]
+   (core/request-job! source {:id id :data {:type :invoke :args [f args]}
+                              :response id :response-action :queue}))
+  ([f args] (invoke-send *client* f args)))
+
+;;possibly more elegant, using channels, no waiting on promises, some extra
+;;copying though.  Might be able to eliminate extra copies if we
+;;extend channel impl to the cluster queue directly...
+;;allows incremental progress instead of waiting on all promises.
+(defn dmap!
+  ([source f xs]
+   (let [fsym (u/symbolize f)
+         id   (str "queue-" (core/uuid))
+         in   (cluster-channel-in source id (map (fn [x] (invoke source fsym [x]))))
+         out  (cluster-channel-out source id)]
+     (a/onto-chan in xs)
+     out))
+  ([f xs]
+   (dmap! *client* f xs)))
