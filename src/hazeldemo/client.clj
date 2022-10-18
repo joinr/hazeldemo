@@ -238,49 +238,63 @@
           ^java.util.Map
           open-channels (or (core/get-object source :open-channels)
                             (ch/hz-map :open-channels source))
-          _ (.put open-channels id)]
+          _ (.set open-channels id true)]
       q)))
 
+(let [stdout *out*]
+  (defn log! [msg]
+    (binding [*out* stdout]
+      (println msg))))
+
 ;;acquire a channel that is fed from a blocking queue on the cluster.
-(defn cluster-channel-out [source id]
-  (let [^java.util.concurrent.BlockingQueue q      (acquire-queue source id)
-        out    (chan Long/MAX_VALUE) ;;temporary, want to have caller configure
-        worker (future (loop []
-                         (if-let [v (.take q)] ;;blocks.
-                           (if-not (identical? v +closed+)
-                             ;;put the value on the channel
-                             (do (>!! out v)
-                                 (recur))
-                             ;;delete the queue, stop working.
-                             (do (core/destroy! source id)
-                                 (a/close! out))))))]
-    ;;if we close out before worker, then we should stop the thread.
-    out))
+(defn cluster-channel-out
+  ([source id xf]
+   (let [^java.util.concurrent.BlockingQueue q      (acquire-queue source id)
+         out    (if xf
+                  (chan Long/MAX_VALUE xf) ;;temporary, want to have caller configure
+                  (chan Long/MAX_VALUE))
+         worker (future (loop []
+                          (if-let [v (.take q)] ;;blocks.
+                            (if-not (= v +closed+)
+                              ;;put the value on the channel
+                              (do (>!! out v)
+                                  (recur))
+                              ;;delete the queue, stop working.
+                              (do (log! [:destroying id])
+                                  (core/destroy! source id)
+                                  (a/close! out))))))]
+     ;;if we close out before worker, then we should stop the thread.
+     out))
+  ([source id] (cluster-channel-out source id nil)))
 
 ;;returns a clojure channel where puts trigger items being copied to the
 ;;remote queue on the cluster (simulating a distributed channel).
-;;core.asyn semantics for closing the channel apply; if in is closed,
+;;core.async semantics for closing the channel apply; if in is closed,
 ;;then the corresponding queue "channel" is closed as well. once
 ;;elements from the cluster are drained (from a corresponding out
 ;;channel), then the queue is deleted from the cluster.
 (defn cluster-channel-in
   ([source id xf]
-  (let [^java.util.concurrent.BlockingQueue q      (acquire-queue source id)
-        in  (if xf
-              (a/chan Long/MAX_VALUE xf)
-              (a/chan Long/MAX_VALUE))
-        worker (future (loop []
-                         (if-let [v (<!! in)] ;;blocks.
-                           ;;put the value on queue.
-                           (do (.put q v)
-                               (recur))
-                           ;;if in is closed, we stop pulling.
-                           ;;queue is no longer open either, but
-                           ;;may have elements remaining to be drained.
-                           (let [_ (.put q +closed+)
-                                 m (core/get-object source :open-channels)]
-                             (.remove m id)))))]
-    in))
+   (let [^java.util.concurrent.BlockingQueue q      (acquire-queue source id)
+         in  (if xf
+               (a/chan Long/MAX_VALUE xf)
+               (a/chan Long/MAX_VALUE))
+         stdout *out*
+         log (a/chan (a/dropping-buffer 1) (map (fn [x] (binding [*out* stdout]
+                                                          (println [:log x])
+                                                          x))))
+         worker (future (loop []
+                          (if-let [v (<!! in)] ;;blocks.
+                            ;;put the value on queue.
+                            (do (.put q v)
+                                (recur))
+                            ;;if in is closed, we stop pulling.
+                            ;;queue is no longer open either, but
+                            ;;may have elements remaining to be drained.
+                            (let [_ (.put q +closed+)
+                                  m (core/get-object source :open-channels)]
+                              (.remove m id)))))]
+     in))
   ([source id] (cluster-channel-in source id nil)))
 
 
@@ -288,9 +302,9 @@
 ;;enqueued onto the target.
 (defn invoke-send
   ([source id f args]
-   (core/request-job! source {:id id :data {:type :invoke :args [f args]}
-                              :response id :response-action :queue}))
-  ([f args] (invoke-send *client* f args)))
+   (core/request-job! source
+    {:id id :data {:type :invoke :args [f args]} :response id :response-type :queue}))
+  ([id f args] (invoke-send *client* id f args)))
 
 ;;possibly more elegant, using channels, no waiting on promises, some extra
 ;;copying though.  Might be able to eliminate extra copies if we
@@ -299,10 +313,35 @@
 (defn dmap!
   ([source f xs]
    (let [fsym (u/symbolize f)
-         id   (str "queue-" (core/uuid))
-         in   (cluster-channel-in source id (map (fn [x] (invoke source fsym [x]))))
-         out  (cluster-channel-out source id)]
-     (a/onto-chan in xs)
+         id   (keyword (str "queue-" (core/uuid))) ;;get-object was finnicky...
+         responses (atom 0)
+         stdout *out*
+         out  (cluster-channel-out source id
+               (map (fn [x] (swap! responses unchecked-inc)
+                      x)))
+         n    (reduce (fn [acc x]
+                        (invoke-send source id fsym [x])
+                        (unchecked-inc acc)) 0 xs)
+         _ (log! id)
+         ;;when no more are remaining we should close by sending a close signal.
+         _  (add-watch responses :close-chan
+                       (fn closer [acc k v0 v1]
+                         (log! [v0 v1 (core/get-object source id) ])
+                         (when (= v1 n)
+                           (let [q (core/get-object source id)
+                                 _ (log! [:closing-queue! q +closed+ v1])]
+                             (.put ^java.util.concurrent.BlockingQueue
+                                   q +closed+)))))]
      out))
-  ([f xs]
-   (dmap! *client* f xs)))
+  ([f xs] (dmap! *client* f xs)))
+
+(comment
+
+  (def result-chan (dmap! inc (range 10)))
+  ;;coerces work to be executed (manually, normally workers
+  ;;would be doing this in a thread)
+  (core/poll-queue!! core/do-job 1 core/jobs)
+  ;;should see the client disconnect after the seq realizes
+  ;;and the future completes...
+  
+)

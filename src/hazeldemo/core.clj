@@ -185,9 +185,9 @@
 
 (defn uuid [] (str (java.util.UUID/randomUUID)))
 (defn request-job!
-  ([source {:keys [id data response] :as m}]
+  ([source {:keys [id data response response-type] :as m}]
    (if-let [^java.util.concurrent.BlockingQueue jobs (get-object source :jobs)]
-     (do (.put jobs {:id id :data data :response response})
+     (do (.put jobs m)
          (ch/publish arrived {:new-work id})
          response)
      (throw (ex-info "cannot find jobs queue on source" {:source source :args m}))))
@@ -225,7 +225,7 @@
 ;;  :response "87f8a1fb-74e8-4b3d-93d7-8eb87864518b"}
 
 ;;a dumb message handler.
-(defn do-job [{:keys [id data response] :as job}]
+(defn do-job [{:keys [id data response response-type] :as job}]
   (let [{:keys [type args]} data
         res   (case (data :type)
                 :add    (apply + args)
@@ -234,9 +234,12 @@
                 :invoke (let [[fname  params] args]
                           (try (apply (u/as-function fname) params)
                                (catch Exception e e))))]
-        (when response ;;we can overload this to allow us to push to queues easily.
-          (.set ^java.util.Map results response res))
-        res))
+    (when response ;;we can overload this to allow us to push to queues easily.
+      (case response-type
+        (nil :map) (.set ^java.util.Map results response res)
+        :queue     (.put (ch/hz-queue id *cluster*) res)
+        (throw (ex-info "unknown response-type!" {:response-type response-type :in job}))))
+    res))
 
 ;;hazeldemo.core> (do-job {:id "blah" :data {:type :invoke :args ["clojure.core/+" 1 2 3]}})
 ;;6
