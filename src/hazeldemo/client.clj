@@ -260,8 +260,7 @@
                               (do (>!! out v)
                                   (recur))
                               ;;delete the queue, stop working.
-                              (do (log! [:destroying id])
-                                  (core/destroy! source id)
+                              (do (core/destroy! source id)
                                   (a/close! out))))))]
      ;;if we close out before worker, then we should stop the thread.
      out))
@@ -322,26 +321,24 @@
          n    (reduce (fn [acc x]
                         (invoke-send source id fsym [x])
                         (unchecked-inc acc)) 0 xs)
-         _ (log! id)
          ;;when no more are remaining we should close by sending a close signal.
          _  (add-watch responses :close-chan
                        (fn closer [acc k v0 v1]
-                         (log! [v0 v1 (core/get-object source id) ])
                          (when (= v1 n)
-                           (let [q (core/get-object source id)
-                                 _ (log! [:closing-queue! q +closed+ v1])]
-                             (.put ^java.util.concurrent.BlockingQueue
-                                   q +closed+)))))]
+                           (let [^java.util.concurrent.BlockingQueue
+                                 q (core/get-object source id)
+                                 ^java.util.Map
+                                 oc (core/get-object source :open-channels)]
+                             (.put q +closed+)
+                             (.remove oc id)))))]
      out))
   ([f xs] (dmap! *client* f xs)))
 
+;;working
 (comment
-
   (def result-chan (dmap! inc (range 10)))
   ;;coerces work to be executed (manually, normally workers
   ;;would be doing this in a thread)
   (core/poll-queue!! core/do-job 1 core/jobs)
-  ;;should see the client disconnect after the seq realizes
-  ;;and the future completes...
-  
+  (a/into [] result-chan)
 )

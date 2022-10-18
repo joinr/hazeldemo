@@ -3,6 +3,24 @@
             [clojure.core.async :as a :refer
              [>! <! >!! <!! put! take! chan]]))
 
+(defn memo-1 [f]
+  (let [^java.util.concurrent.ConcurrentHashMap
+        cache (java.util.concurrent.ConcurrentHashMap.)]
+    (fn [k]
+      (if-let [res (.get cache k)]
+        res
+        (let [res (f k)
+              _  (.put cache k res)]
+          res)))))
+
+(defn unstring [k]
+  (if (string? k)
+    (keyword k)
+    k))
+
+(alter-var-root #'unstring memo-1)
+
+
 (defprotocol IRemote
   (as-function [this] "coerces arg into an invokable function"))
 

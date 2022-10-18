@@ -16,6 +16,12 @@
            [(keyword (.getName itm)) itm])))
   ([] (get-objects *cluster*)))
 
+(defn unstring [k]
+  (if (string? k)
+    (keyword k)
+    k))
+(alter-var-root #'unstring u/memo-1)
+
 ;;looks for jobs topic
 (defn get-object
   ([source k] (-> source get-objects (get k)))
