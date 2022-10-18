@@ -58,6 +58,8 @@
 ;;database objects eagerly.  Another option is to extend deref to
 ;;distributed datastructures.  This is useful if we want to do a
 ;;limited scope computation an then disconnect.
+;;[What if a client isn't found?]
+;; -we should throw if no client is detected.
 (defmacro with-client
   [[client & [config]] & body]
   `(let [~client (ch/client-instance ~(case config (nil :default) +config+ config))]
@@ -232,7 +234,7 @@
                 :invoke (let [[fname  params] args]
                           (try (apply (u/as-function fname) params)
                                (catch Exception e e))))]
-        (when response
+        (when response ;;we can overload this to allow us to push to queues easily.
           (.set ^java.util.Map results response res))
         res))
 
