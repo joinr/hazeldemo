@@ -16,15 +16,10 @@
            [(keyword (.getName itm)) itm])))
   ([] (get-objects *cluster*)))
 
-(defn unstring [k]
-  (if (string? k)
-    (keyword k)
-    k))
-(alter-var-root #'unstring u/memo-1)
 
 ;;looks for jobs topic
 (defn get-object
-  ([source k] (-> source get-objects (get k)))
+  ([source k] (-> source get-objects (get (u/unstring k))))
   ([k] (get-object *cluster* k)))
 
 (defn destroy!
@@ -247,24 +242,4 @@
         (throw (ex-info "unknown response-type!" {:response-type response-type :in job}))))
     res))
 
-;;hazeldemo.core> (do-job {:id "blah" :data {:type :invoke :args ["clojure.core/+" 1 2 3]}})
-;;6
 
-;;we want to listen to the arrived topic and if any jobs have arrived
-;;and we are not working, go drain the queue.
-
-(def work-state  (atom nil))
-(defn await-jobs!!
-  ([handler timeout in]
-   (if-not @work-state ;;not working yet.
-     (let [_   (reset! work-state ::working)
-           res (poll-queue!! timeout handler in)
-           _   (reset! work-state nil)]
-       res)))
-  ([timeout in] (await-jobs!! do-job timeout in))
-  ([in]  (await-jobs!! do-job 500 in))
-  ([]    (await-jobs!! do-job 500 jobs)))
-
-
-;;we want an api function start-workers that will
-;;setup a work queue handling responses on the cluster.

@@ -5,6 +5,7 @@
   (:require [chazel.core :as ch]
             [hazeldemo.core :as core]
             [hazeldemo.utils :as u]
+            [hazeldemo.worker :as work]
             [clojure.core.async :as a :refer
              [>! <! >!! <!! put! take! chan]]))
 
@@ -340,5 +341,27 @@
   ;;coerces work to be executed (manually, normally workers
   ;;would be doing this in a thread)
   (core/poll-queue!! core/do-job 1 core/jobs)
-  (a/into [] result-chan)
-)
+  (a/into [] result-chan))
+
+
+;;with a worker...
+(comment
+  (def result-chan (dmap! inc (range 100)))
+  ;;coerces work to be executed (manually, normally workers
+  ;;would be doing this in a thread)
+  (<!! (a/into [] result-chan))
+  )
+
+(comment
+  (->> (range 100)
+       (dmap! inc)
+       (a/into [])
+       <!!)
+  )
+
+
+(->> (range 100)
+     (map (fn [x] (read-string "(rand-int 100)")))
+     (dmap! *client* clojure.core/eval)
+     (a/into [])
+     <!!)
