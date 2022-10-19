@@ -49,7 +49,8 @@
     (if (re-find eval-regex r)
       (throw (ex-info "cannot resolve anonymous functions for distributed mapping!"
                       {:in f}))
-      (symbol l r))))
+      ;;need to convert underscores in classname to dashes for symbol.
+      (symbol l (clojure.string/replace r "_" "-")))))
 
 ;;get a function's namespace qualified symbol and cache the result.
 (defn symbolize [f]
