@@ -1,8 +1,9 @@
 (ns hazeldemo.core
   (:require [chazel.core :as ch]
-            [hazeldemo.utils :as u]))
+            [hazeldemo.utils :as u]
+            [hazeldemo.config :as cfg]))
 
-(defonce me (first (ch/cluster-of 1 :name "dev")))
+(defonce me (cfg/new-instance "dev"))
 
 (def ^:dynamic *cluster* me)
 

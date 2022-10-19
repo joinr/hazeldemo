@@ -311,7 +311,7 @@
 ;;copying though.  Might be able to eliminate extra copies if we
 ;;extend channel impl to the cluster queue directly...
 ;;allows incremental progress instead of waiting on all promises.
-(defn dmap!
+(defn dmap>
   ([source f xs]
    (let [fsym (u/symbolize f)
          id   (keyword (str "queue-" (core/uuid))) ;;get-object was finnicky...
@@ -334,11 +334,18 @@
                              (.put q +closed+)
                              (.remove oc id)))))]
      out))
+  ([f xs] (dmap> *client* f xs)))
+
+(defn dmap!
+  ([source f xs]
+   (->> (dmap> source f xs)
+        (a/into [])
+        (<!!)))
   ([f xs] (dmap! *client* f xs)))
 
 ;;working
 (comment
-  (def result-chan (dmap! inc (range 10)))
+  (def result-chan (dmap> inc (range 10)))
   ;;coerces work to be executed (manually, normally workers
   ;;would be doing this in a thread)
   (core/poll-queue!! core/do-job 1 core/jobs)
@@ -347,7 +354,7 @@
 
 ;;with a worker...
 (comment
-  (def result-chan (dmap! inc (range 100)))
+  (def result-chan (dmap> inc (range 100)))
   ;;coerces work to be executed (manually, normally workers
   ;;would be doing this in a thread)
   (<!! (a/into [] result-chan))
@@ -355,9 +362,7 @@
 
 (comment
   (->> (range 100)
-       (dmap! inc)
-       (a/into [])
-       <!!)
+       (dmap! inc))
   )
 
 
