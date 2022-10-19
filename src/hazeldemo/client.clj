@@ -13,7 +13,8 @@
 ;;I think we can alleviate the burden of client lifecycling
 ;;a bit by retaining a persistent client and defaulting to it.
 
-(def ^:dynamic *client* (ch/client-instance core/+config+))
+(defonce me (ch/client-instance core/+config+) )
+(def ^:dynamic *client* me)
 
 (defmacro on-cluster [& body]
   `(binding [~'hazeldemo.core/*cluster* *client*]
@@ -360,6 +361,7 @@
   )
 
 
+#_
 (->> (range 100)
      (map (fn [x] (read-string "(rand-int 100)")))
      (dmap! *client* clojure.core/eval)

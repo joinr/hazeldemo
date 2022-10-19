@@ -112,3 +112,14 @@
 ;;it would undoubtedly be more efficient to get
 ;;a queue to dump into.
 
+;;we can possibly handle classes of functions where
+;;we don't depend on ref types.  Maybe also no direct
+;;linking.
+
+;;In theory, we can pass an anonymous function and
+;;store it on the cluster.  That function is naturally
+;;hashed from the client side, so we can store it in a
+;;map on the cluster.  Workers can get the function from
+;;the map if they don't have it already during do-job.
+;;We can then resolve the function as a cluster resource.
+;;Workers pull the function when doing work.
