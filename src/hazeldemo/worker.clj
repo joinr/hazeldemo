@@ -10,7 +10,37 @@
 ;;we want to listen to the arrived topic and if any jobs have arrived
 ;;and we are not working, go drain the queue.
 
+;;for visibility, we want workers to say who they are when
+;;logging (what worker, what cluster member).
+
 (def workers (atom {}))
+
+(defn worker-log [id msg]
+  (core/log! [(str "worker:" id core/addr) msg]))
+
+(defn do-noisy-job
+  ([wid {:keys [id data response response-type] :as job}]
+   (worker-log wid [:handling job])
+   (let [{:keys [type args]} data
+         res   (case (data :type)
+                 :add    (apply + args)
+                 :ping   (println "ping!")
+                 :log    (ch/publish core/log args)
+                 :invoke (let [[fname  params] args
+                               _ (worker-log wid [:invoking fname params])]
+                           (try (apply (u/as-function fname) params)
+                                (catch Exception e e))))]
+     (worker-log wid [:response-pre response])
+     (when response ;;we can overload this to allow us to push to queues easily.
+       (worker-log wid [:reponse response])
+       (case response-type
+         (nil :map) (do (worker-log wid [:setting-result response res])
+                        (.set ^java.util.Map core/results response res))
+         :queue     (do (worker-log wid [:queuing-result response res])
+                        (.put (ch/hz-queue id core/*cluster*) res))
+         (do (worker-log wid [:error-on job])
+             (throw (ex-info "unknown response-type!" {:response-type response-type :in job})))))
+     res)))
 
 ;;workers can listen for new work arrivals and go poll for work.
 (defn ->worker
@@ -22,7 +52,8 @@
                        (loop []
                          (if-let [res (<!! in)]
                            (when  @active
-                             (do (core/poll-queue!! handler timeout source)
+                             (do (worker-log wid "polling!")
+                                 (core/poll-queue!! handler timeout source)
                                  (recur)))
                            (println [:empty-channel :closing-worker wid]))))
          listener    (ch/add-message-listener core/arrived
@@ -45,6 +76,17 @@
                                 handler core/do-job}}]
   (doseq [_ (range n)]
     (let [w (->worker handler timeout source)
+          _ (println [:spawning-worker (w :id)])]
+      (swap! workers assoc (w :id) w))))
+
+(defn spawn-noisy-workers! [n & {:keys [source timeout]
+                           :or {source core/jobs
+                                timeout 500}}]
+  (doseq [_ (range n)]
+    (let [wid (count @workers)
+          handler (fn noisy-handle [job]
+                    (do-noisy-job wid job))
+          w (->worker handler timeout source)
           _ (println [:spawning-worker (w :id)])]
       (swap! workers assoc (w :id) w))))
 

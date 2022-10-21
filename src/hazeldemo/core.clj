@@ -1,9 +1,21 @@
 (ns hazeldemo.core
   (:require [chazel.core :as ch]
             [hazeldemo.utils :as u]
-            [hazeldemo.config :as cfg]))
+            [hazeldemo.config :as cfg]
+            [clojure.core.async :as async]))
+
+;;From Stuart Sierra's blog post, for catching otherwise "slient" exceptions
+;;Since we're using multithreading and the like, and we don't want
+;;exceptions to get silently swallowed
+(let [out *out*]
+  (Thread/setDefaultUncaughtExceptionHandler
+   (reify Thread$UncaughtExceptionHandler
+     (uncaughtException [_ thread ex]
+       (binding [*out* out]
+         (println ["Uncaught Exception on" (.getName thread) ex]))))))
 
 (defonce me (cfg/new-instance "dev"))
+(defonce addr (str (.. me getLocalEndpoint getSocketAddress)))
 
 (def ^:dynamic *cluster* me)
 
@@ -127,6 +139,17 @@
 ;;need a way to clear message listeners (this provides guid for clearing)
 (defonce log-id (ch/add-message-listener log (fn [msg] (println [:LOG msg]))))
 
+(defonce log-chan (async/chan (async/dropping-buffer 1)))
+(def stdout *out*)
+(async/thread (binding [*out* stdout]
+                (loop []
+                  (when-let [res (async/<!! log-chan)]
+                    (println [:LOG res])
+                    (recur)))))
+
+(defn log! [msg]
+  (async/put! log-chan msg))
+
 ;;for our purposes, we can simulate promises with a map where
 ;;the "channel" is a guid key and an entry.
 ;;We can add an entry listener to determine when known entries show up/
@@ -242,5 +265,3 @@
         :queue     (.put (ch/hz-queue id *cluster*) res)
         (throw (ex-info "unknown response-type!" {:response-type response-type :in job}))))
     res))
-
-

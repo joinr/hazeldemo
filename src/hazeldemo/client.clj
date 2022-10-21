@@ -362,8 +362,7 @@
 
 (comment
   (->> (range 100)
-       (dmap! inc))
-  )
+       (dmap! inc)))
 
 
 #_
