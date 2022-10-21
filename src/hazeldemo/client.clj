@@ -355,19 +355,20 @@
    (let [id (str "queue" (core/uuid))
          fsym (u/symbolize f)
         ^java.util.concurrent.BlockingQueue
-        new-queue (acquire-queue source id)
-        n         (reduce (fn [acc x]
-                            (core/request-job! source
-                              {:id id :data {:type :invoke :args [f [x]]} :response id :response-type :queue})
-                            (unchecked-inc acc)) 0 xs)]
-    (future (loop [n   n
-                   acc []]
-              (if (pos? n)
-                (let [x (.take new-queue)]
-                  (recur (unchecked-dec n)
-                         (conj acc x)))
-                (do (core/destroy! source id)
-                    acc))))))
+        new-queue (acquire-queue source id)]
+     (future
+       (let [n (reduce (fn [acc x]
+                         (core/request-job! source
+                                            {:id id :data {:type :invoke :args [f [x]]} :response id :response-type :queue})
+                         (unchecked-inc acc)) 0 xs)]
+         (loop [n   n
+                acc []]
+           (if (pos? n)
+             (let [x (.take new-queue)]
+               (recur (unchecked-dec n)
+                      (conj acc x)))
+             (do (core/destroy! source id)
+                 acc)))))))
   ([f xs] (dmap-future *client* f xs)))
 
 (defn dmap>
@@ -382,19 +383,20 @@
          fsym (u/symbolize f)
         ^java.util.concurrent.BlockingQueue
         new-queue (acquire-queue source id)
-        n         (reduce (fn [acc x]
-                            (core/request-job! source
-                              {:id id :data {:type :invoke :args [f [x]]} :response id :response-type :queue})
-                            (unchecked-inc acc)) 0 xs)
         out  (a/chan Long/MAX_VALUE)]
-    (a/thread (loop [n   n]
-                (if (pos? n)
-                  (let [x (.take new-queue)
-                        _ (a/put! out x)]
-                    (recur (unchecked-dec n)))
-                  (do (core/destroy! source id)
-                      (a/close! out)))))
-    out))
+     (a/thread
+       (let [n (reduce (fn [acc x]
+                         (core/request-job! source
+                                            {:id id :data {:type :invoke :args [f [x]]} :response id :response-type :queue})
+                         (unchecked-inc acc)) 0 xs)]
+         (loop [n   n]
+           (if (pos? n)
+             (let [x (.take new-queue)
+                   _ (a/put! out x)]
+               (recur (unchecked-dec n)))
+             (do (core/destroy! source id)
+                 (a/close! out))))))
+     out))
   ([f xs] (dmap> *client* f xs)))
 
 (defn dmap!
