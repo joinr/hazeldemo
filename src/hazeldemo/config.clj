@@ -81,18 +81,17 @@
   (cond
     (map? id-or-map) ;;passed in maps override local config.
        (ch/new-instance (parse-config id-or-map))
-     (string? id-or-map)
-       (let [id id-or-map]
-         (if-let [cfg (get-config!)]
-           (do (.. cfg (setInstanceName id)) ;;merge id with local config.
-               (ch/new-instance cfg))
-           ;;use env vars for cloud stuff by default.
-           (if-let [env (get (System/getenv) "HAZELCAST")]
-             (if (= env "AWS")
-               (ch/new-instance (->aws id))
-               (ch/new-instance (->default id)))
-             (ch/new-instance (->default id)))))
-       :else (throw (ex-info "unknown instance arg type!" {:in id-or-map}))))
+    (string? id-or-map)
+      (let [id id-or-map]
+      ;;use env vars for cloud stuff by default.
+        (if-let [env (get (System/getenv) "HAZELCAST")]
+          (if (= env "AWS")
+            (ch/new-instance (->aws id))
+            (ch/new-instance (->default id)))
+          (let [cfg (get-config!)]
+            (do (.. cfg (setInstanceName id)) ;;merge id with local config.
+                (ch/new-instance cfg)))))
+        :else (throw (ex-info "unknown instance arg type!" {:in id-or-map}))))
 
 ;; <hazelcast>
 ;;     ...
