@@ -389,9 +389,9 @@
         out  (a/chan Long/MAX_VALUE)]
     (a/thread (loop [n   n]
                 (if (pos? n)
-                  (let [x (.take new-queue)]
-                    (recur (unchecked-dec n)
-                           (a/put! out x)))
+                  (let [x (.take new-queue)
+                        _ (a/put! out x)]
+                    (recur (unchecked-dec n)))
                   (do (core/destroy! source id)
                       (a/close! out)))))
     out))
