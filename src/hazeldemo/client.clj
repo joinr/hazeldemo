@@ -48,6 +48,14 @@
 ;;the core/do-work function can infer the response (or we submit added data to guide
 ;;processing).
 
+;;like invoke, except we submit jobs and indicate the result should be
+;;enqueued onto the target.
+(defn invoke-send
+  ([source id f args]
+   (core/request-job! source
+                      {:id id :data {:type :invoke :args [f args]} :response id :response-type :queue}))
+  ([id f args] (invoke-send *client* id f args)))
+
 ;;In this case, we get a direct abstraction between channels/queues.  I don't think
 ;;it makes sense for 1-off channels though because we end up with a lot of distributed
 ;;queues that may be unnecessary.  jobs are scheduled on a unified queue infrastructure.
@@ -249,6 +257,7 @@
       (println msg))))
 
 ;;acquire a channel that is fed from a blocking queue on the cluster.
+;;WIP doesn't work all the time!
 (defn cluster-channel-out
   ([source id xf]
    (let [^java.util.concurrent.BlockingQueue q      (acquire-queue source id)
@@ -274,6 +283,8 @@
 ;;then the corresponding queue "channel" is closed as well. once
 ;;elements from the cluster are drained (from a corresponding out
 ;;channel), then the queue is deleted from the cluster.
+
+;;WIP doesn't work all the time!
 (defn cluster-channel-in
   ([source id xf]
    (let [^java.util.concurrent.BlockingQueue q      (acquire-queue source id)
@@ -299,19 +310,103 @@
   ([source id] (cluster-channel-in source id nil)))
 
 
-;;like invoke, except we submit jobs and indicate the result should be
-;;enqueued onto the target.
-(defn invoke-send
-  ([source id f args]
-   (core/request-job! source
-    {:id id :data {:type :invoke :args [f args]} :response id :response-type :queue}))
-  ([id f args] (invoke-send *client* id f args)))
+
+;;working
+(comment
+  (def result-chan (dmap> inc (range 10)))
+  ;;coerces work to be executed (manually, normally workers
+  ;;would be doing this in a thread)
+  (core/poll-queue!! core/do-job 1 core/jobs)
+  (a/into [] result-chan))
+
+
+;;with a worker...
+(comment
+  (def result-chan (dmap> inc (range 100)))
+  ;;coerces work to be executed (manually, normally workers
+  ;;would be doing this in a thread)
+  (<!! (a/into [] result-chan))
+  )
+
+(comment
+  (->> (range 100)
+       (dmap! inc)))
+
+
+#_
+(->> (range 100)
+     (map (fn [x] (read-string "(rand-int 100)")))
+     (dmap! *client* clojure.core/eval)
+     (a/into [])
+     <!!)
+
+
+;;let's create another way to do this for testing.
+;;lower level, simpler.
+(defn dmap-future
+  "Maps f over xs, yielding a future where a vector of results will be
+   delivered."
+  ([source f xs]
+  ;;create a new queue, no channels.
+  ;;push jobs to the jobs queue.
+  ;;tell workers to push results to the queue (already doing this).
+  ;;loop and pull results from the queue.
+  ;;when we get all the results from the queue, we close the queue and delete it.
+   (let [id (str "queue" (core/uuid))
+         fsym (u/symbolize f)
+        ^java.util.concurrent.BlockingQueue
+        new-queue (acquire-queue source id)
+        n         (reduce (fn [acc x]
+                            (core/request-job! source
+                              {:id id :data {:type :invoke :args [f [x]]} :response id :response-type :queue})
+                            (unchecked-inc acc)) 0 xs)]
+    (future (loop [n   n
+                   acc []]
+              (if (pos? n)
+                (let [x (.take new-queue)]
+                  (recur (unchecked-dec n)
+                         (conj acc x)))
+                (do (core/destroy! source id)
+                    acc))))))
+  ([f xs] (dmap-future *client* f xs)))
+
+(defn dmap>
+  "Like dmap! but provides a channel where results may be consumed as they are produced."
+  ([source f xs]
+  ;;create a new queue, no channels.
+  ;;push jobs to the jobs queue.
+  ;;tell workers to push results to the queue (already doing this).
+  ;;loop and pull results from the queue.
+  ;;when we get all the results from the queue, we close the queue and delete it.
+   (let [id (str "queue" (core/uuid))
+         fsym (u/symbolize f)
+        ^java.util.concurrent.BlockingQueue
+        new-queue (acquire-queue source id)
+        n         (reduce (fn [acc x]
+                            (core/request-job! source
+                              {:id id :data {:type :invoke :args [f [x]]} :response id :response-type :queue})
+                            (unchecked-inc acc)) 0 xs)
+        out  (a/chan Long/MAX_VALUE)]
+    (a/thread (loop [n   n]
+                (if (pos? n)
+                  (let [x (.take new-queue)]
+                    (recur (unchecked-dec n)
+                           (a/put! out x)))
+                  (do (core/destroy! source id)
+                      (a/close! out)))))
+    out))
+  ([f xs] (dmap> *client* f xs)))
+
 
 ;;possibly more elegant, using channels, no waiting on promises, some extra
 ;;copying though.  Might be able to eliminate extra copies if we
 ;;extend channel impl to the cluster queue directly...
 ;;allows incremental progress instead of waiting on all promises.
-(defn dmap>
+
+;;channel-based variants that failed stochastically.  Replaced with simpler
+;;direct queue-managed options.
+(comment
+  (defn dmap>
   ([source f xs]
    (let [fsym (u/symbolize f)
          id   (keyword (str "queue-" (core/uuid))) ;;get-object was finnicky...
@@ -343,31 +438,4 @@
         (<!!)))
   ([f xs] (dmap! *client* f xs)))
 
-;;working
-(comment
-  (def result-chan (dmap> inc (range 10)))
-  ;;coerces work to be executed (manually, normally workers
-  ;;would be doing this in a thread)
-  (core/poll-queue!! core/do-job 1 core/jobs)
-  (a/into [] result-chan))
-
-
-;;with a worker...
-(comment
-  (def result-chan (dmap> inc (range 100)))
-  ;;coerces work to be executed (manually, normally workers
-  ;;would be doing this in a thread)
-  (<!! (a/into [] result-chan))
-  )
-
-(comment
-  (->> (range 100)
-       (dmap! inc)))
-
-
-#_
-(->> (range 100)
-     (map (fn [x] (read-string "(rand-int 100)")))
-     (dmap! *client* clojure.core/eval)
-     (a/into [])
-     <!!)
+)

@@ -9,6 +9,18 @@
     (.. cfg getNetworkConfig getJoin getAwsConfig       (setEnabled true))
     cfg))
 
+;;add in support for ad-hoc tcp-ip networks
+(defn ->tcp-ip [id & {:keys [required members]}]
+  (let [cfg (Config.)]
+    (.. cfg (setInstanceName id))
+    (.. cfg getNetworkConfig getJoin getMulticastConfig (setEnabled false))
+    (let [tcp     (.. cfg getNetworkConfig getJoin getTcpIpConfig)]
+      (.. tcp (setEnabled true))
+      (when required (.. tcp (setRequiredMember required)))
+      (doseq [member members]
+        (.. tcp (addMember member)))
+      cfg)))
+
 (defn ->default [id]
   (let [cfg (Config.)]
     (.. cfg (setInstanceName id))
