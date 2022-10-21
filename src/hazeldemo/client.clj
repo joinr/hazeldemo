@@ -397,6 +397,11 @@
     out))
   ([f xs] (dmap> *client* f xs)))
 
+(defn dmap!
+  ([source f xs]
+   (->> (dmap-future source f xs)
+        deref))
+  ([f xs] (dmap! *client* f xs)))
 
 ;;possibly more elegant, using channels, no waiting on promises, some extra
 ;;copying though.  Might be able to eliminate extra copies if we
