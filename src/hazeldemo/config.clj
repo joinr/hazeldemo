@@ -1,6 +1,6 @@
 (ns hazeldemo.config
   (:require [chazel.core :as ch]
-            [clojure.java.io :as io])
+            [spork.util.io :as io])
   (:import [com.hazelcast.config Config]))
 
 (defn ->aws [id]
@@ -40,7 +40,24 @@
 {:id "dev"
  :join :tcp
  :members {:file/path some-file} | ["member1" "member2" ....]
- :required "some-member"}
+ :required "some-member"
+ :append-on-join? true|false}
+
+;;want to allow member logging of ip's to a shared file.
+;;add an option to append our IP to the members log, e.g.
+;;if we have dynamic ip's.
+;;opens up some interesting challenges that are out of scope.
+;;we could have a sqlite db as well and just connect to it
+;;to record info, but meh.  For no we will just use log files.
+;;They are ephemeral and can be blasted if necessary.
+
+;;for parsing, we can allow users to define a default config.
+;;~/.chazel/chazel.edn, or a chazel.edn colocated in the
+;;invoking directory (e.g. if running from a jar).
+
+;;If an id is specified we can merge it, otherwise let
+;;the user's id stand.  Allows peer-specified connection
+;;configuration.
 
 (defmulti parse-config (fn [m] (m :join)))
 
@@ -49,7 +66,7 @@
     ;;a path to a registry of known members, line-delimited ip addresses.
     ;;registry
     (let [members     (cond (map? members)
-                            (-> (slurp members) clojure.string/split-lines)
+                            (-> members :file/path slurp clojure.string/split-lines)
                         (vector? members) members
                         :else (throw (ex-info "expected a vector of string ips or map of {:file/path string}"
                                               {:in members})))]
@@ -65,16 +82,37 @@
 (defmethod parse-config :aws  [{:keys [id]}]
   (->aws id))
 
+;;places to look for config, in order.
+(def default-paths ["hazelcast.edn" "~/.hazelcast/hazelcast.edn"])
+(defn find-config! []
+  (some (fn [path]
+          (when (io/fexists? (io/file path))
+            path)) default-paths))
+
 (defn get-config!
   ([config-map] (parse-config config-map))
-  ([] (-> (if (.exists (io/file "hazelcast.edn"))
-            (do (println [:loading-config "./hazelcast.edn"])
-                (-> (slurp "hazelcast.edn")
+  ([] (-> (if-let [path (find-config!)]
+            (do (println [:loading-config path])
+                (-> (slurp (io/file path))
                     clojure.edn/read-string))
             (do (println [:no-config :using-default :multicast])
                 {:id "dev"
                  :join :multicast}))
           get-config!)))
+
+
+;;allow a couple of ways to do this:
+;;look for hazelcast.edn,
+;;or a global ~/.hazelcast/hazelcast.edn
+;;loading the config from there.
+
+;;If none is found, check env var HAZELCAST,
+;;since we may set peers on AWS to indicate
+;;an IAM aws connection.  This is trivially accomplished
+;;with baked ENV vars and baked into the image.
+;;Note: we could also define a hazelcast.edn and
+;;set it up that way too.
+
 
 ;;derive based on env var HAZELCAST
 (defn new-instance [id-or-map]

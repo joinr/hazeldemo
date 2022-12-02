@@ -7,4 +7,5 @@
                  [org.clojure/core.async "1.5.648"]
                  [tolitius/chazel "0.1.23"]
                  [org.hface/hface-client "0.1.8"]
-                 [com.hazelcast/hazelcast-aws "3.4"]])
+                 [com.hazelcast/hazelcast-aws "3.4"]
+                 [spork "0.2.1.4-SNAPSHOT"]])
