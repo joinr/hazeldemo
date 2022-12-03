@@ -3,6 +3,50 @@
             [spork.util.io :as io])
   (:import [com.hazelcast.config Config]))
 
+;;helpers
+(defn touch [path]
+  (when-not (io/fexists? (io/file-path path))
+    (println [:file/touching path])
+    (io/hock (io/file-path path) ""))
+  path)
+
+(defn dir? [^java.io.File f]
+  (.isDirectory f))
+
+;;for now, let's assume this works for the simple case.
+;;and that we aren't changing IP addresses within
+;;a single session..
+(defn my-ip []
+  (.getHostAddress (java.net.Inet4Address/getLocalHost)))
+
+;;this will be really dumb, and we won't use file locks yet. Just maintain
+;;a members directory, where each file is an ip address.  This should
+;;allow concurrent write/creation of different atomic entries (files).
+;;Clients can delete their file as well.  We just need to have the service
+;;infer that a directory means you should scan the file names to get
+;;addresses.
+
+;;Alternately, we have the dumb manual method - store a fixed set of
+;;IP addresses at a network location.  Clients only read from this,
+;;it's the responsibility of the admin to manage the member list.
+
+(defn push-ip!   [members-dir]
+  (touch (io/file-path members-dir ( my-ip))))
+(defn remove-ip! [members-dir]
+  (io/delete-file-recursively (io/file-path members-dir (my-ip))))
+
+(defn get-members! [members-dir]
+  (->> (io/list-files (io/file-path members-dir))
+       (mapv io/fname)))
+
+(defn parse-members [path]
+  (let [target (io/file path)]
+    (if (dir? target)
+      (-> (get-members! target)
+          (with-meta {:file/path path}))
+      (->> path touch io/file slurp clojure.string/split-lines
+           (filterv (complement clojure.string/blank?))))))
+
 (defn ->aws [id]
   (let [cfg (Config.)]
     (.. cfg (setInstanceName id))
@@ -61,14 +105,22 @@
 
 (defmulti parse-config (fn [m] (m :join)))
 
+;;if members is a file path, we want to get the current members.
+;;it's possible there is no members file yet.  So our semantic are to
+;;touch the file to ensure it exists, and then read it.
+;;We also allow the submission of a directory instead of a file.
+;;If a directory is supplied, the directory is inferred to be a
+;;registry of all the active ips (one file, where the name is the ip, per
+;;member).  This should allow concurrent access to the registry (just look up
+;;the current children and return the file names).
 (defmethod parse-config :tcp [{:keys [id join members required]}]
     ;;members may be a vector of ip addresses or
     ;;a path to a registry of known members, line-delimited ip addresses.
     ;;registry
-    (let [members     (cond (map? members)
-                            (-> members :file/path slurp clojure.string/split-lines)
-                        (vector? members) members
-                        :else (throw (ex-info "expected a vector of string ips or map of {:file/path string}"
+  (let [members     (cond
+                      (map? members)   (parse-members (members :file/path))
+                      (vector? members) members
+                      :else (throw (ex-info "expected a vector of string ips or map of {:file/path string}"
                                               {:in members})))]
   (->tcp-ip id :required required :members members)))
 
