@@ -359,7 +359,7 @@
      (future
        (let [n (reduce (fn [acc x]
                          (core/request-job! source
-                                            {:id id :data {:type :invoke :args [f [x]]} :response id :response-type :queue})
+                                            {:id id :data {:type :invoke :args [fsym [x]]} :response id :response-type :queue})
                          (unchecked-inc acc)) 0 xs)]
          (loop [n   n
                 acc []]
@@ -387,7 +387,7 @@
      (a/thread
        (let [n (reduce (fn [acc x]
                          (core/request-job! source
-                                            {:id id :data {:type :invoke :args [f [x]]} :response id :response-type :queue})
+                                            {:id id :data {:type :invoke :args [fsym [x]]} :response id :response-type :queue})
                          (unchecked-inc acc)) 0 xs)]
          (loop [n   n]
            (if (pos? n)
@@ -446,3 +446,8 @@
   ([f xs] (dmap! *client* f xs)))
 
 )
+
+;;simple remote eval:
+(comment
+  (def res (invoke 'eval ['(+ 2 3)]))
+  )
