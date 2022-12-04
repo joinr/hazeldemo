@@ -4,6 +4,20 @@
   (:import [com.hazelcast.config Config]))
 
 ;;helpers
+
+;;we create a proxy around Config objects to
+;;allow us to pack some meta data along for
+;;post-creation/shutdown operations (things
+;;like registering/registering from registries).
+;;This implementation is janky since operations
+;;like with-meta are technically mutable.  Internal
+;;use only for now, so who cares.
+(defn ->config []
+  (let [md (atom {})]
+    (proxy [Config clojure.lang.IObj] []
+      (meta [] @md)
+      (withMeta [m] (do (reset! md m) this)))))
+
 (defn touch [path]
   (when-not (io/fexists? (io/file-path path))
     (println [:file/touching path])
@@ -12,6 +26,8 @@
 
 (defn dir? [^java.io.File f]
   (.isDirectory f))
+
+;;allow trivial meta in Config objects.
 
 ;;for now, let's assume this works for the simple case.
 ;;and that we aren't changing IP addresses within
@@ -30,8 +46,13 @@
 ;;IP addresses at a network location.  Clients only read from this,
 ;;it's the responsibility of the admin to manage the member list.
 
+;;For visibility/debugging, we also push the computer name
+;;as the file content, although we typically will only
+;;really care about the ips.
 (defn push-ip!   [members-dir]
-  (touch (io/file-path members-dir ( my-ip))))
+  (io/hock (io/file-path members-dir (my-ip))
+           (.getHostName (java.net.Inet4Address/getLocalHost))))
+
 (defn remove-ip! [members-dir]
   (io/delete-file-recursively (io/file-path members-dir (my-ip))))
 
@@ -48,7 +69,7 @@
            (filterv (complement clojure.string/blank?))))))
 
 (defn ->aws [id]
-  (let [cfg (Config.)]
+  (let [cfg (->config) #_(Config.)]
     (.. cfg (setInstanceName id))
     (.. cfg getNetworkConfig getJoin getMulticastConfig (setEnabled false))
     (.. cfg getNetworkConfig getJoin getAwsConfig       (setEnabled true))
@@ -56,7 +77,7 @@
 
 ;;add in support for ad-hoc tcp-ip networks
 (defn ->tcp-ip [id & {:keys [required members]}]
-  (let [cfg (Config.)]
+  (let [cfg (->config) #_(Config.)]
     (.. cfg (setInstanceName id))
     (.. cfg getNetworkConfig getJoin getMulticastConfig (setEnabled false))
     (let [tcp     (.. cfg getNetworkConfig getJoin getTcpIpConfig)]
@@ -66,7 +87,7 @@
       cfg)))
 
 (defn ->default [id]
-  (let [cfg (Config.)]
+  (let [cfg (->config) #_(Config.)]
     (.. cfg (setInstanceName id))
     cfg))
 
@@ -85,7 +106,7 @@
  :join :tcp
  :members {:file/path some-file} | ["member1" "member2" ....]
  :required "some-member"
- :append-on-join? true|false}
+ :register-on-join true|false}
 
 ;;want to allow member logging of ip's to a shared file.
 ;;add an option to append our IP to the members log, e.g.
@@ -113,7 +134,7 @@
 ;;registry of all the active ips (one file, where the name is the ip, per
 ;;member).  This should allow concurrent access to the registry (just look up
 ;;the current children and return the file names).
-(defmethod parse-config :tcp [{:keys [id join members required]}]
+(defmethod parse-config :tcp [{:keys [id join members required register-on-join]}]
     ;;members may be a vector of ip addresses or
     ;;a path to a registry of known members, line-delimited ip addresses.
     ;;registry
@@ -121,8 +142,10 @@
                       (map? members)   (parse-members (members :file/path))
                       (vector? members) members
                       :else (throw (ex-info "expected a vector of string ips or map of {:file/path string}"
-                                              {:in members})))]
-  (->tcp-ip id :required required :members members)))
+                                            {:in members})))]
+    (-> (->tcp-ip id :required required :members members)
+        (with-meta {:member-registry (-> members meta :file/path)
+                    :register-on-join register-on-join}))))
 
 (defmethod parse-config :multicast [{:keys [id join multicast-port]
                                          :or {id "dev"}}]
@@ -168,20 +191,25 @@
 
 ;;derive based on env var HAZELCAST
 (defn new-instance [id-or-map]
-  (cond
-    (map? id-or-map) ;;passed in maps override local config.
-       (ch/new-instance (parse-config id-or-map))
-    (string? id-or-map)
-      (let [id id-or-map]
-      ;;use env vars for cloud stuff by default.
-        (if-let [env (get (System/getenv) "HAZELCAST")]
-          (if (= env "AWS")
-            (ch/new-instance (->aws id))
-            (ch/new-instance (->default id)))
-          (let [cfg (get-config!)]
-            (do (.. cfg (setInstanceName id)) ;;merge id with local config.
-                (ch/new-instance cfg)))))
-        :else (throw (ex-info "unknown instance arg type!" {:in id-or-map}))))
+  (let [cfg (cond
+              (map? id-or-map) ;;passed in maps override local config.
+                (parse-config id-or-map)
+              (string? id-or-map)
+                (let [id id-or-map]
+                  ;;use env vars for cloud stuff by default.
+                  (if-let [env (get (System/getenv) "HAZELCAST")]
+                    (if (= env "AWS")
+                      (->aws id)
+                      (->default id))
+                    (let [cfg (get-config!)]
+                      (do (.. cfg (setInstanceName id)) ;;merge id with local config.
+                          cfg))))
+                :else (throw (ex-info "unknown instance arg type!" {:in id-or-map})))
+        res   (ch/new-instance cfg)
+        m     (meta cfg)]
+    (when-let [registry (and (m :register-on-join) (m :member-registry))]
+      (push-ip! registry))
+    res))
 
 ;; <hazelcast>
 ;;     ...

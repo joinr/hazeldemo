@@ -14,7 +14,7 @@
        (binding [*out* out]
          (println ["Uncaught Exception on" (.getName thread) ex]))))))
 
-(defonce me (cfg/new-instance "dev"))
+(defonce me   (cfg/new-instance "dev"))
 (defonce addr (str (.. me getLocalEndpoint getSocketAddress)))
 
 (def ^:dynamic *cluster* me)
