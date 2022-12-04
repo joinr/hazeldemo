@@ -32,8 +32,15 @@
 ;;for now, let's assume this works for the simple case.
 ;;and that we aren't changing IP addresses within
 ;;a single session..
+;;need to make this more robust.  currently possible to have
+;;more than one interface (e.g. testing on wifi with an ethernet adapter).
+;;inet should indicate gateway, find first interface where gateway
+;;exists.
+;;https://stackoverflow.com/questions/9481865/getting-the-ip-address-of-the-current-machine-using-java/38342964#38342964
 (defn my-ip []
-  (.getHostAddress (java.net.Inet4Address/getLocalHost)))
+  (let [socket (java.net.DatagramSocket.)]
+    (.connect socket (java.net.InetAddress/getByName "8.8.8.8") 10002)
+    (.. socket getLocalAddress getHostAddress)))
 
 ;;this will be really dumb, and we won't use file locks yet. Just maintain
 ;;a members directory, where each file is an ip address.  This should
