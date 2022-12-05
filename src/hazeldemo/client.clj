@@ -248,7 +248,7 @@
           ^java.util.Map
           open-channels (or (core/get-object source :open-channels)
                             (ch/hz-map :open-channels source))
-          _ (.set open-channels id true)]
+          _ (.put ^java.util.Map open-channels id true)]
       q)))
 
 (let [stdout *out*]
@@ -304,6 +304,7 @@
                             ;;queue is no longer open either, but
                             ;;may have elements remaining to be drained.
                             (let [_ (.put q +closed+)
+                                  ^java.util.Map
                                   m (core/get-object source :open-channels)]
                               (.remove m id)))))]
      in))

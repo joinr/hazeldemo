@@ -35,9 +35,10 @@
        (worker-log wid [:reponse response])
        (case response-type
          (nil :map) (do (worker-log wid [:setting-result response res])
-                        (.set ^java.util.Map core/results response res))
+                        (.put ^java.util.Map core/results response res))
          :queue     (do (worker-log wid [:queuing-result response res])
-                        (.put (ch/hz-queue id core/*cluster*) res))
+                        (.put ^java.util.concurrent.BlockingQueue
+                              (ch/hz-queue id core/*cluster*) res))
          (do (worker-log wid [:error-on job])
              (throw (ex-info "unknown response-type!" {:response-type response-type :in job})))))
      res)))

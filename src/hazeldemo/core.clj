@@ -261,7 +261,7 @@
                                (catch Exception e e))))]
     (when response ;;we can overload this to allow us to push to queues easily.
       (case response-type
-        (nil :map) (.set ^java.util.Map results response res)
-        :queue     (.put (ch/hz-queue id *cluster*) res)
+        (nil :map) (.put ^java.util.Map results response res)
+        :queue     (.put ^java.util.concurrent.BlockingQueue (ch/hz-queue id *cluster*) res)
         (throw (ex-info "unknown response-type!" {:response-type response-type :in job}))))
     res))
