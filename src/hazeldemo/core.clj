@@ -225,9 +225,31 @@
    (if jobs
      (do (.put jobs m)
          (ch/publish arrived {:new-work id})
-         response)
+         1)
      (throw (ex-info "cannot find jobs queue on source" {:source source :args m})))))
   ([data] (request-job! *cluster* :jobs data)))
+
+;;if we rewrite request-job into request-jobs, and implement the singleton
+;;version on top of it.
+
+
+;;here we provide a batched operation that uses putAll
+(defn request-jobs!
+  ([source jobs coll]
+   (let [^java.util.concurrent.BlockingQueue jobs
+         (if (instance? java.util.concurrent.BlockingQueue jobs) ;;allow callers to pass in queue.
+           jobs
+           (get-object source jobs))]
+     (if jobs
+       (let [total (reduce (fn [acc part]
+                             (.addAll jobs part)
+                             (+ acc (count part))) 0
+                           (eduction (partition-all 200) coll));;push a batch of work.
+             ]
+           (ch/publish arrived {:new-work (-> coll first :id)})
+           total)
+       (throw (ex-info "cannot find jobs queue on source" {:source source :args jobs})))))
+  ([data] (request-jobs! *cluster* :jobs data)))
 
 
 ;;we can wrap this up in a convenience macro.

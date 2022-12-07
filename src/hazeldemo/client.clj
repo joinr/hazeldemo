@@ -407,11 +407,57 @@
         deref))
   ([f xs] (dmap! *client* f xs)))
 
+
+(defn drain!
+  (^long [^java.util.concurrent.BlockingQueue q]
+   (drain! q (java.util.ArrayList.)))
+  (^long [^java.util.concurrent.BlockingQueue q ^java.util.ArrayList coll]
+   (.drainTo q coll)))
+
+(defn dmap-future-batch
+  "Maps f over xs, yielding a future where a vector of results will be
+   delivered."
+  ([source f xs]
+  ;;create a new queue, no channels.
+  ;;push jobs to the jobs queue.
+  ;;tell workers to push results to the queue (already doing this).
+  ;;loop and pull results from the queue.
+  ;;when we get all the results from the queue, we close the queue and delete it.
+   (let [id (str "queue" (core/uuid))
+         fsym (u/symbolize f)
+        ^java.util.concurrent.BlockingQueue
+         new-queue (acquire-queue source id)
+         jobs (core/get-object source :jobs)]
+     (future
+       (let [total (->> xs
+                    (eduction (map (fn [x]
+                                     {:id id :data {:type :invoke :args [fsym [x]]}
+                                      :response id :response-type :queue})))
+                    (core/request-jobs! source jobs))]         ;;we repeatedly drainTo an intermediate collection until we get all the
+         ;;results, or timeout trying.  Basically implement our own poll.
+         (loop [n   total
+                acc (java.util.ArrayList.)]
+           (if (pos? n)
+             (let [k (drain! new-queue acc)
+                   _ (core/log! [:drained k])]
+               (cond (zero? k)
+                     (let [x (.take new-queue)]
+                       (recur (unchecked-dec n) (doto acc (.add x))))
+                     :else (recur (- n k) acc)))
+             (do (core/destroy! source id)
+                 acc)))))))
+  ([f xs] (dmap-future-batch *client* f xs)))
 ;;possibly more elegant, using channels, no waiting on promises, some extra
 ;;copying though.  Might be able to eliminate extra copies if we
 ;;extend channel impl to the cluster queue directly...
 ;;allows incremental progress instead of waiting on all promises.
 
+
+(defn dmap!!
+  ([source f xs]
+   (->> (dmap-future-batch source f xs)
+        deref))
+  ([f xs] (dmap!! *client* f xs)))
 ;;channel-based variants that failed stochastically.  Replaced with simpler
 ;;direct queue-managed options.
 (comment

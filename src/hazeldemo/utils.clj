@@ -3,6 +3,17 @@
             [clojure.core.async :as a :refer
              [>! <! >!! <!! put! take! chan]]))
 
+;;shim around an iterable that implements collection
+;;and delegates to the obj's iterator.  Mainly to
+;;satisfy janky interface requirements in addAll.
+;;This allows us to wrap eductions and pass them through,
+;;very niche usage.
+(defn ->itercoll ^java.util.Collection [^java.lang.Iterable obj]
+  (if (instance? java.util.Collection obj)
+    obj
+    (reify java.util.Collection
+      (iterator [this] (.iterator obj)))))
+
 (defn memo-1 [f]
   (let [^java.util.concurrent.ConcurrentHashMap
         cache (java.util.concurrent.ConcurrentHashMap.)]
