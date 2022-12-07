@@ -356,11 +356,12 @@
    (let [id (str "queue" (core/uuid))
          fsym (u/symbolize f)
         ^java.util.concurrent.BlockingQueue
-        new-queue (acquire-queue source id)]
+         new-queue (acquire-queue source id)
+         jobs (core/get-object source :jobs)]
      (future
        (let [n (reduce (fn [acc x]
-                         (core/request-job! source
-                                            {:id id :data {:type :invoke :args [fsym [x]]} :response id :response-type :queue})
+                         (core/request-job! source jobs
+                              {:id id :data {:type :invoke :args [fsym [x]]} :response id :response-type :queue})
                          (unchecked-inc acc)) 0 xs)]
          (loop [n   n
                 acc []]

@@ -209,14 +209,25 @@
 ;;In theory we have many promises in flight
 
 (defn uuid [] (str (java.util.UUID/randomUUID)))
+;;getting the object every time we request a job....
+;;[Critical Performance Note:]
+;;It turns out, following the examples shown, where we
+;;use put/take to manipulate entries one-at-a-time,
+;;we end up with a substantial performance hit,
+;;particularly when there are other cluster members,
+;;vs using batch loads via putAll and drainTo.
 (defn request-job!
-  ([source {:keys [id data response response-type] :as m}]
-   (if-let [^java.util.concurrent.BlockingQueue jobs (get-object source :jobs)]
+  ([source jobs {:keys [id data response response-type] :as m}]
+   (let [^java.util.concurrent.BlockingQueue jobs
+         (if (instance? java.util.concurrent.BlockingQueue jobs) ;;allow callers to pass in queue.
+           jobs
+           (get-object source jobs))]
+   (if jobs
      (do (.put jobs m)
          (ch/publish arrived {:new-work id})
          response)
-     (throw (ex-info "cannot find jobs queue on source" {:source source :args m}))))
-  ([data] (request-job! *cluster* data)))
+     (throw (ex-info "cannot find jobs queue on source" {:source source :args m})))))
+  ([data] (request-job! *cluster* :jobs data)))
 
 
 ;;we can wrap this up in a convenience macro.
