@@ -298,3 +298,8 @@
         :queue     (.put ^java.util.concurrent.BlockingQueue (ch/hz-queue id *cluster*) res)
         (throw (ex-info "unknown response-type!" {:response-type response-type :in job}))))
     res))
+
+
+(defn get-member []
+  (.. ^com.hazelcast.core.HazelcastInstance
+      *cluster* getCluster getLocalMember toString))

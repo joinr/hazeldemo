@@ -499,3 +499,37 @@
 (comment
   (def res (invoke 'eval ['(+ 2 3)]))
   )
+
+
+;;use executor service implementation....see if this is faster,
+;;examine downsides.
+;;This is about 73x faster than the queue-based implementation,
+;;around 50x slower than in-memory pmap (2570x slower than single-core map...).
+(defn fmap [f coll]
+  (let [n    10
+        rets (map #(ch/ftask  (partial f %)) coll)
+        step (fn step [[x & xs :as vs] fs]
+               (lazy-seq
+                (if-let [s (seq fs)]
+                  (cons (deref x) (step xs (rest s)))
+                  (map deref vs))))]
+    (step rets (drop n rets))))
+
+(defn fmap2
+  ([n size f coll]
+   (let [rets (map #(ch/ftask  (partial mapv f %)) (partition size coll))
+         step (fn step [[x & xs :as vs] fs]
+                (lazy-seq
+                 (if-let [s (seq fs)]
+                   (concat (deref x) (step xs (rest s)))
+                   (mapcat deref vs))))]
+     (step rets (drop n rets)))))
+
+;;playing with fmap
+(comment
+  (defn noisy-inc [n]
+    (let [mem  (.. core/*cluster* getCluster getLocalMember str)]
+      ))
+
+
+  )
