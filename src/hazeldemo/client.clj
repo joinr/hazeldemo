@@ -533,3 +533,22 @@
 
 
   )
+
+(defmacro get-f! [src]
+  `(if ~'f ~'f
+       (let [func# (eval ~src)]
+         (set! ~'f func#)
+         func#)))
+
+(defrecord psuedofn [^String src ^{:tag 'clojure.lang.IFn :volatile-mutable true} f]
+  clojure.lang.IFn
+  (invoke [this]
+    ((get-f! 'src)))
+  (invoke [this arg]
+    ((get-f! 'src) arg)))
+
+;;we also have issues with the client side bindings.  In some cases for legacy
+;;control flow, we uses bindings for nested stuff in the api.
+
+;;we want something like bound-fn, but with the semantics of resolving
+;;symbols if necessary.
