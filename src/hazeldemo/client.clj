@@ -525,6 +525,27 @@
                    (mapcat deref vs))))]
      (step rets (drop n rets)))))
 
+
+(defn eval-all! [expr]
+  (let [res (ch/ftask (partial eval expr) :members :all)]
+    (doseq [[m v] res]
+      (println [m @v]))))
+
+(defmacro compile*
+  "Read one or more expresssions and compile them, as if by load-file without the need
+   for a file."
+  [expr & exprs]
+  (let [txt (if (seq exprs)
+              (reduce str (interpose "\n" (into [expr] exprs)))
+              (str expr))]
+    `(with-open [rdr# (clojure.java.io/reader (char-array ~txt))]
+       (clojure.lang.Compiler/load ^java.io.Reader rdr#))))
+
+(defn compile-all! [expr]
+  (let [res (ch/ftask (partial eval `(compile* ~expr)) :members :all)]
+    (doseq [[m v] res]
+      (println [m @v]))))
+
 ;;playing with fmap
 (comment
   (defn noisy-inc [n]
