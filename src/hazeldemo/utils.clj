@@ -1,7 +1,18 @@
 (ns hazeldemo.utils
   (:require [chazel.core :as ch]
+            [clojure.java.io]
             [clojure.core.async :as a :refer
              [>! <! >!! <!! put! take! chan]]))
+
+(defmacro compile*
+  "Read one or more expresssions and compile them, as if by load-file without the need
+   for a file."
+  [expr & exprs]
+  (let [txt (if (seq exprs)
+              (reduce str (interpose "\n" (into [expr] exprs)))
+              (str expr))]
+    `(with-open [rdr# (clojure.java.io/reader (char-array ~txt))]
+       (clojure.lang.Compiler/load ^java.io.Reader rdr#))))
 
 ;;shim around an iterable that implements collection
 ;;and delegates to the obj's iterator.  Mainly to
