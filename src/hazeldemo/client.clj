@@ -532,7 +532,7 @@
       (println [m @v]))))
 
 (defn compile-all! [expr]
-  (let [res (ch/ftask (partial eval `(hazeldemo.utils/compile* ~expr)) :members :all)]
+  (let [res (ch/ftask (partial apply hazeldemo.utils/compile* expr) :members :all)]
     (doseq [[m v] res]
       (println [m @v]))))
 
