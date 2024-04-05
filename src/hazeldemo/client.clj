@@ -447,64 +447,37 @@
              (do (core/destroy! source id)
                  acc)))))))
   ([f xs] (dmap-future-batch *client* f xs)))
+
 ;;possibly more elegant, using channels, no waiting on promises, some extra
 ;;copying though.  Might be able to eliminate extra copies if we
 ;;extend channel impl to the cluster queue directly...
 ;;allows incremental progress instead of waiting on all promises.
-
 
 (defn dmap!!
   ([source f xs]
    (->> (dmap-future-batch source f xs)
         deref))
   ([f xs] (dmap!! *client* f xs)))
-;;channel-based variants that failed stochastically.  Replaced with simpler
-;;direct queue-managed options.
-(comment
-  (defn dmap>
-  ([source f xs]
-   (let [fsym (u/symbolize f)
-         id   (keyword (str "queue-" (core/uuid))) ;;get-object was finnicky...
-         responses (atom 0)
-         stdout *out*
-         out  (cluster-channel-out source id
-               (map (fn [x] (swap! responses unchecked-inc)
-                      x)))
-         n    (reduce (fn [acc x]
-                        (invoke-send source id fsym [x])
-                        (unchecked-inc acc)) 0 xs)
-         ;;when no more are remaining we should close by sending a close signal.
-         _  (add-watch responses :close-chan
-                       (fn closer [acc k v0 v1]
-                         (when (= v1 n)
-                           (let [^java.util.concurrent.BlockingQueue
-                                 q (core/get-object source id)
-                                 ^java.util.Map
-                                 oc (core/get-object source :open-channels)]
-                             (.put q +closed+)
-                             (.remove oc id)))))]
-     out))
-  ([f xs] (dmap> *client* f xs)))
-
-(defn dmap!
-  ([source f xs]
-   (->> (dmap> source f xs)
-        (a/into [])
-        (<!!)))
-  ([f xs] (dmap! *client* f xs)))
-
-)
-
-;;simple remote eval:
-(comment
-  (def res (invoke 'eval ['(+ 2 3)]))
-  )
-
 
 ;;use executor service implementation....see if this is faster,
 ;;examine downsides.
 ;;This is about 73x faster than the queue-based implementation,
 ;;around 50x slower than in-memory pmap (2570x slower than single-core map...).
+;;The problem we have here, is that if f is an anonymous function, we fail.
+;;Since the classname for anony functions are not consistent across the cluster,
+;;we need a way to resolve them (where currently partial is used to make thunks).
+
+;;a) we can detect if f is a function, and if it's anonymous.
+
+;;b) if it's not, we can lift it into the function's qualified name
+;;   an project that using util/as-function to have the clients
+;;   resolve on their end and apply.
+
+;;c) if it's anonymous, we can serialize it with nippy,
+;;   have the clients deserialize it and apply on their end.
+;;   if we are chewing a bunch of tasks, maybe we don't want
+;;   to constantly deserialize the function....
+
 (defn fmap [f coll]
   (let [n    10
         rets (map #(ch/ftask  (partial f %)) coll)
@@ -525,6 +498,8 @@
                    (mapcat deref vs))))]
      (step rets (drop n rets)))))
 
+
+;;control plane for evaluation and load, cluster-wide by default.
 
 (defn eval-all! [expr]
   (let [res (ch/ftask (partial eval expr) :members :all)]
@@ -563,3 +538,50 @@
 
 ;;we want something like bound-fn, but with the semantics of resolving
 ;;symbols if necessary.
+
+
+;;OBE research paths
+;;==================
+
+
+;;channel-based variants that failed stochastically.  Replaced with simpler
+;;direct queue-managed options.
+(comment
+  (defn dmap>
+  ([source f xs]
+   (let [fsym (u/symbolize f)
+         id   (keyword (str "queue-" (core/uuid))) ;;get-object was finnicky...
+         responses (atom 0)
+         stdout *out*
+         out  (cluster-channel-out source id
+               (map (fn [x] (swap! responses unchecked-inc)
+                      x)))
+         n    (reduce (fn [acc x]
+                        (invoke-send source id fsym [x])
+                        (unchecked-inc acc)) 0 xs)
+         ;;when no more are remaining we should close by sending a close signal.
+         _  (add-watch responses :close-chan
+                       (fn closer [acc k v0 v1]
+                         (when (= v1 n)
+                           (let [^java.util.concurrent.BlockingQueue
+                                 q (core/get-object source id)
+                                 ^java.util.Map
+                                 oc (core/get-object source :open-channels)]
+                             (.put q +closed+)
+                             (.remove oc id)))))]
+     out))
+  ([f xs] (dmap> *client* f xs)))
+
+(defn dmap!
+  ([source f xs]
+   (->> (dmap> source f xs)
+        (a/into [])
+        (<!!)))
+  ([f xs] (dmap! *client* f xs)))
+
+)
+
+;;simple remote eval:
+(cosmment
+  (def res (invoke 'eval ['(+ 2 3)]))
+  )

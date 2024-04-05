@@ -1,4 +1,4 @@
-(defproject hazeldemo "0.1.0-SNAPSHOT"
+(defproject hazeldemo "0.1.1-SNAPSHOT"
   :description "FIXME: write description"
   :url "http://example.com/FIXME"
   :license {:name "EPL-2.0 OR GPL-2.0-or-later WITH Classpath-exception-2.0"
@@ -8,4 +8,6 @@
                  [tolitius/chazel "0.1.23"]
                  [org.hface/hface-client "0.1.8"]
                  [com.hazelcast/hazelcast-aws "3.4"]
-                 [spork "0.2.1.4-SNAPSHOT"]])
+                 [spork "0.2.1.4-SNAPSHOT"
+                  :exclusions [com.taoensso/nippy]]
+                 [com.rpl/nippy-serializable-fns "0.4.2"]])
