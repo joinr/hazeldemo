@@ -141,6 +141,9 @@ hazeldemo.utils$eval21729$f__21730
 {:symbol-fn 'hazeldemo.utils$eval21729$f__21730
  :body (nippy/freeze (fn [x] (+ 2 3)))}
 
+#_
+(let [f (fn ([x y z] (+ x y z)) ([x y] (+ x y))) fr (function-ref f)]
+  (nippy/freeze-to-file "demo.bin" fr))
 
 (def function-cache (atom {}))
 

@@ -1,0 +1,458 @@
+* hazeldemo
+
+This is a WIP wrapper around [[https://github.com/tolitius/chazel][chazel]] , which in turn provides a nice clojure
+wrapper around [[https://hazelcast.com/][hazelcast.]]
+
+The primary intent here is to leverage hazelcast's ability to discover members
+simply, to form clusters, share data, and distribute work. Since everything runs
+on the JVM, we can provide a simple mechanism to embed distributed peers in a
+clojure cluster and farm out computations, store data, or establish higher order
+services. We can think of this as a library similar to [[https://github.com/amitrathore/swarmiji][Amit Rathore's swarmiji]]
+distributed computation library, with efficient distributed in-memory state,
+and a plethora of distributed data structures (maps, queues, lists, etc.).
+All of this with 0 infrastructure requirement beyond the JVM (e.g. no
+external message queue, data store, etc.).
+
+This repo extends chazel with some APIs and features to make it much easier to
+configure clusters and to execute computations from a repl that provide
+distributed versions of their clojure analogues (namely mapping).
+
+I also provide facilities for distributed evaluation and loading (or compilation
+from a string source) to enable a repl client to live-update the cluster peers
+(e.g. with new function definitions or arbitrary code).
+
+Other useful functions like querying objects, logging, and general introspection
+facilities are also available in various states.  (I hope to provide some
+simple web-based introspection and dashboards, as well as the ability to
+connect to an instance's nrepl for debugging.)
+
+There is a legacy job-queue and worker system (an original API for distributed
+computing), which is no longer preferred due to latency costs and replication
+overhead. It ends up being far more simple and efficient to leverage the extant
+grid-computing setup for this facility (which chazel exposes via tasks).
+
+** Usage
+
+*** General Design
+Upon requiring the core or client namespaces, a globally bound
+connection will be defined.  The intended use is to require these
+namespaces once, for the duration of the program.  Future iterations
+will likely lean away from this simplistic view (as it's not a limitation
+of hazel, but of this library's design).
+
+The idea is that one can embed this library as a dependency (e.g.
+in a broader application or library where you want to make functions
+or named services available for distributed computation).  When embedded,
+creating a computational "peer" is trivial - create a namspace that requires
+the functions you want to expose, and require the hazeldemo.core ns.
+
+This will automatically start a (headless) peer that will try to find other members
+via your configuration mechanism (defined below).
+
+- hazeldemo.core/
+  - *cluster*
+    The dynamic var pointing to the currenet connection (default hazeldemo.core/me).
+
+- hazeldemo.client
+  - *client*
+    The dynamic var pointing to the current client connection (default hazeldemo.client/me).
+
+To submit work to the cluster, assuming the local configuration is consistent
+with the peers (e.g. they can find eachother), from a repl one can require the
+hazeldemo.client namespace (as well as any namespaces shared by the peers for
+sevices). The client instance will similarly discover and connect to its peers
+(for now it establishes itself as a peer, which can be changed in the future).
+
+After that, you can then leverage the higher-level API in hazeldemo.client to
+submit work to the cluster (primarily via the currently-named fmap). From the
+perspective of the client, this looks and acts identically to clojure.core/map
+or pmap, but is actually submitting tasks to the cluster which peers will pull,
+evaluate, and submit results for via the distributed ExecutorService
+implementation.
+
+*** Config
+There are three primary use cases that I currently support (as a subset, or "easy path")
+within the broader hazelcast config domain.  Hazelcast supports robust configuration
+via XML config files that can be loaded at connection time.  These files are ultimately
+parsed into configuration objects that are passed along to the connection constructors
+for either the client or the server.  The below example shows 3 different
+ways to configure connections
+
+- auto detect with multicast
+- detection with known ip addresses
+- detection via aws IAM policies
+
+#+BEGIN_SRC xml
+ <hazelcast>
+     ...
+     <network>
+         <join>
+             <auto-detection enabled="true" />
+             <multicast enabled="false">
+                 <multicast-group>224.2.2.3</multicast-group>
+                 <multicast-port>54327</multicast-port>
+                 <multicast-time-to-live>32</multicast-time-to-live>
+                 <multicast-timeout-seconds>2</multicast-timeout-seconds>
+                 <trusted-interfaces>
+                     <interface>192.168.1.102</interface>
+                 </trusted-interfaces>
+             </multicast>
+             <tcp-ip enabled="false">
+                 <required-member>192.168.1.104</required-member>
+                 <member>192.168.1.104</member>
+                 <members>192.168.1.105,192.168.1.106</members>
+             </tcp-ip>
+             <aws enabled="false">
+                 <access-key>my-access-key</access-key>
+                 <secret-key>my-secret-key</secret-key>
+                 <region>us-west-1</region>
+                 <host-header>ec2.amazonaws.com</host-header>
+                 <security-group-name>hazelcast-sg</security-group-name>
+                 <tag-key>type</tag-key>
+                 <tag-value>hz-members</tag-value>
+             </aws>
+             <discovery-strategies>
+                 <discovery-strategy ... />
+             </discovery-strategies>
+         </join>
+     </network>
+     ...
+ </hazelcast>
+#+END_SRC
+
+
+With no configuration specified, hazelcast will automatically use multicast to try to find members.
+Depending on network configuration this can be enough and is definitely the "easy button".  You just
+have peers established and they'll find eachother.
+
+For ease of use, we currently define clojure maps (conventionally .edn files)
+that correspond to configuration objects.
+
+The maps conform to
+
+#+BEGIN_SRC clojure
+    {;;name of the cluster to join
+     :id "dev"
+     ;;join method
+     :join #{:multicast :tcp :aws}
+     ;;known members, either a map of :file/path that points
+     ;;to a shared folder all peers can access to discover
+     ;;and register dynamically, or a vector of ip addresses
+     ;;specifying known (fixed) peers.
+     :members [:or {:file/path path-to-registry-directory}
+                   [ip-address-string1 ... ip-address-stringn]]
+     ;;optional required member
+     :required required-ip-string
+     ;;if [:members :file/path], then determines if new cluster memebers write their
+     ;;information to the registry. true by default.
+     :register-on-join #{true false}}
+#+END_SRC
+
+The library will look for configuration maps in this order:
+
+- look for  ./hazelcast.edn (e.g. config colocated in the launch directory),
+- look for ~/.hazelcast/hazelcast.edn (global config).
+- If none is found, check env var HAZELCAST, since we may set peers on AWS to indicate
+  an IAM aws connection.
+
+Note: the third option (HAZELCAST env var), is currently tied to a specific use case for
+AWS EC2 environs (that can change/broaden in the future).
+
+***** Port
+By default, hazelcast assumes port 5701 is open for communication among the peers.
+This can be changed, but for now we assume it is fixed.
+
+**** Multicast (default)
+If no config is supplied, we use this:
+#+BEGIN_SRC clojure
+{:id "dev"
+ :join :multicast}
+#+END_SRC
+
+**** Static Registration of IPs For TCP/IP
+
+One case is on local networks where multicast is disabled, but connection over
+tcp/ip is fine.  If we know the IP addresses and are confident they won't
+change, then we can specify it:
+
+The generic form for the :tcp join method is
+#+BEGIN_SRC clojure
+{:id "dev"
+ :join :tcp
+ :members {:file/path some-file} | ["member1" "member2" ....]
+ :required "some-member"
+ :register-on-join true|false}
+ #+END_SRC
+
+The following is sufficient for a cluster with static members:
+ #+BEGIN_SRC clojure
+{:id "dev"
+ :join :tcp
+ :members  ["192.168.1.3" "192.168.1.8"]}
+ #+END_SRC
+
+**** Dynamic Registration of IPs For TCP/IP
+
+Without knowing the machine IP's beforehand, there is no way to dynamically
+register new machines with the cluster to incrementally scale up. In this case
+either a members file or a directory may be supplied. The file would contain the
+newline-delimited list of known members and allow external updating of the
+registry by whatever means. A directory enables automatic registration semantics
+that follow.
+
+For configuration, if :members is a :file/path, we want to get the current
+members when the peer joins. It's possible there is no members file yet. So our
+semantics are to touch the file to ensure it exists, and then read it.
+
+If a directory is supplied, the directory is inferred to be a registry of all
+the active ips (one file, where the name is the ip, per member). This should
+allow concurrent access to the registry (just look up the current children and
+return the file names). This allows concurrent write/creation of different
+atomic entries (files). Clients can delete their file as well (to withdraw). Our
+connection service infers that a directory means you should scan the file names
+to get addresses of potential cluster members.
+
+For visibility/debugging, we also push the computer name as the file content,
+although we typically will only really care about the ips (the file name).
+
+For example, we may have a configuration in ~/.hazelcast/hazelcast.edn
+
+ #+BEGIN_SRC clojure
+{:id "dev"
+ :join :tcp
+ :members {:file/path "v:/registry/"}
+ :register-on-join true}
+ #+END_SRC
+
+ Assuming that v:/registry points to a shared folder that other peers can see, it will
+ store the ip address and computer names of peers as the spin up, and provide a
+ starting point for known cluster members to join.
+
+ Upon connecting 2 peers, we may end up with these files in v:/registry:
+
+#+BEGIN_SRC bash
+ 192.168.1.3 BILBO
+ 192.168.1.8 SAM
+#+END_SRC
+
+**** AWS
+When operating in an AWS VPC (e.g. with an auto scaling group), you can setup a security group
+with appropriate permissions (e.g. port 5701 open), and use an appropriate IAM profile to
+allow for instances to leverage the AWS api to discover eachother.  These steps are documented
+in detail in the [[https://docs.hazelcast.com/hazelcast/5.4/deploy/deploying-on-aws][hazelcast tutorial.]]
+
+For our part, the library provides a simple convenience config if you are running in AWS.
+Either follow the earlier map-based configuration with a .edn file,
+
+ #+BEGIN_SRC clojure
+{:id "dev"
+ :join :aws}
+ #+END_SRC
+
+In this case, discovery is much like the multicast case, and it will Just Work for the members
+in a VPC with the appropriate AWS-level configuration controls.
+
+*** Simple Interactive Usage
+Given a client connection, we can interact with the peers in numerous ways.
+
+We should inherit all the features from chazel.  Given a connection, that api
+is available (future versions of this library will export chazel's api via the client ns).
+
+Our focus is on what this library provides.  The simplest is a distributed map.
+The name is currently client/fmap (subject to change).
+
+#+BEGIN_SRC clojure
+user=> (require '[hazeldemo.client :as client])
+user=> (client/eval-all! '(println "hello"))
+hello
+[#object[com.hazelcast.cluster.impl.MemberImpl 0x7fb02869 Member [192.168.1.8]:5701 - b469d1ef-8ab0-4e78-9b49-b959cf9b03dc] nil]
+[#object[com.hazelcast.cluster.impl.MemberImpl 0x92fa950 Member [192.168.1.3]:5701 - 11f4f986-e0d9-4294-a44d-b3a4ee32bad6] nil]
+nil
+#+END_SRC
+
+The simplest is probably just evaluating expressions on all peers:
+#+BEGIN_SRC clojure
+user=> (client/fmap inc (range 10))
+(1 2 3 4 5 6 7 8 9 10)
+#+END_SRC
+
+Without any notion of what's happening, it looks like this happens on the client's repl and computer.
+This is intended.  To prove we have some distribution, we would like to view some effects.
+Then, if looking at the console or repl on the peers, we should see some interesting results.
+
+The idiomatic way to do this would be to define a new function.  We need a way to do this
+across the cluster.  If we had a named function every peer could resolve and use, then
+we could invoke it for map.
+
+
+#+BEGIN_SRC clojure
+user=> (require '[hazeldemo.client :as client])
+user=> (client/eval-all! '(println "hello"))
+hello
+[#object[com.hazelcast.cluster.impl.MemberImpl 0x7fb02869 Member [192.168.1.8]:5701 - b469d1ef-8ab0-4e78-9b49-b959cf9b03dc] nil]
+[#object[com.hazelcast.cluster.impl.MemberImpl 0x92fa950 Member [192.168.1.3]:5701 - 11f4f986-e0d9-4294-a44d-b3a4ee32bad6] nil]
+nil
+#+END_SRC
+
+#+BEGIN_SRC clojure
+user=> (require '[hazeldemo.client :as client])
+user=> (client/eval-all! '(println "hello"))
+hello
+[#object[com.hazelcast.cluster.impl.MemberImpl 0x7fb02869 Member [192.168.1.8]:5701 - b469d1ef-8ab0-4e78-9b49-b959cf9b03dc] nil]
+[#object[com.hazelcast.cluster.impl.MemberImpl 0x92fa950 Member [192.168.1.3]:5701 - 11f4f986-e0d9-4294-a44d-b3a4ee32bad6] nil]
+nil
+#+END_SRC
+
+If you look at the console on the other peer, we should see it dutifully printing "hello".
+
+This is a general purpose eval though, so we can go further.  Let's define a new resolvable
+function and invoke it.
+
+#+BEGIN_SRC clojure
+user=> (client/eval-all! '(defn worker [x] (+ x 2)))
+[#object[com.hazelcast.cluster.impl.MemberImpl 0x2b0483f2 Member [192.168.1.8]:5701 - b469d1ef-8ab0-4e78-9b49-b959cf9b03dc] #'clojure.core/worker]
+[#object[com.hazelcast.cluster.impl.MemberImpl 0xb8e6981 Member [192.168.1.3]:5701 - 11f4f986-e0d9-4294-a44d-b3a4ee32bad6] #'clojure.core/worker]
+nil
+user=> worker
+Syntax error compiling at (REPL:0:0).
+Unable to resolve symbol: worker in this context
+user=> (apropos "worker")
+(clojure.core/worker hazeldemo.worker/->worker hazeldemo.worker/spawn-noisy-workers! hazeldemo.worker/spawn-workers! hazeldemo.worker/worker-log hazeldemo.worker/workers)
+user=> worker
+user=> clojure.core/worker
+#object[clojure.core$worker 0x224f90eb "clojure.core$worker@224f90eb"]
+user=> (clojure.core/worker 2)
+4
+user=> (client/eval-all! '*ns*)
+[#object[com.hazelcast.cluster.impl.MemberImpl 0x1b26f006 Member [192.168.1.8]:5701 - b469d1ef-8ab0-4e78-9b49-b959cf9b03dc] #object[clojure.lang.Namespace 0x31b758af clojure.core]]
+[#object[com.hazelcast.cluster.impl.MemberImpl 0x38a6ca39 Member [192.168.1.3]:5701 - 11f4f986-e0d9-4294-a44d-b3a4ee32bad6] #object[clojure.lang.Namespace 0x31b758af clojure.core]]
+nil
+#+END_SRC
+
+So we defined a new function `worker` which unfortunately used the clojure.core namespace.  Future
+API changes will correct for that (e.g. set the ns we are evaling from on the client),
+but for now we'll just be REALLY specific.
+
+We can actually hook into the same functionality that clojure.core/load-file uses compile sequences of forms:
+#+BEGIN_SRC clojure
+user=> (client/compile-all! '[(in-ns 'user) (defn worker [x] (+ x 3))])
+[#object[com.hazelcast.cluster.impl.MemberImpl 0x4faccb34 Member [192.168.1.8]:5701 - b469d1ef-8ab0-4e78-9b49-b959cf9b03dc] #'user/worker]
+[#object[com.hazelcast.cluster.impl.MemberImpl 0x2cb4e4b1 Member [192.168.1.3]:5701 - 11f4f986-e0d9-4294-a44d-b3a4ee32bad6] #'user/worker]
+nil
+#+END_SRC
+
+#+BEGIN_SRC clojure
+  user=> (client/compile-all! '[(in-ns 'user) (defn noisy-val [x]
+                                                (println (str x hazeldemo.core/addr))
+                                                  x)])
+  [#object[com.hazelcast.cluster.impl.MemberImpl 0x4faccb34 Member [192.168.1.8]:5701 - b469d1ef-8ab0-4e78-9b49-b959cf9b03dc] #'user/worker]
+  [#object[com.hazelcast.cluster.impl.MemberImpl 0x2cb4e4b1 Member [192.168.1.3]:5701 - 11f4f986-e0d9-4294-a44d-b3a4ee32bad6] #'user/worker]
+  nil
+#+END_SRC
+
+Let's circle back to fmap now:
+
+#+BEGIN_SRC
+user=> (def res (vec (client/fmap (comp inc noisy-val) (range 10))))
+0/192.168.1.3:5701
+1/192.168.1.3:5701
+4/192.168.1.3:5701
+8/192.168.1.3:5701
+6/192.168.1.3:5701
+5/192.168.1.3:5701
+
+#'user/res
+user=> res
+[1 2 3 4 5 6 7 8 9 10]
+#+END_SRC
+
+We can see from the logging that this peer (colocated with our client) did about 1/2 the work.
+The other peer indicates on its logging that the other numbers were picked up.
+
+In practice, client code will likely be merely invoking known functions in simple
+workflows like fmap.  Future iterations could look into distributed reductions, as
+well as more complicated processing topologies.
+
+We do have a legacy computational model that allows for low-level weaving of arbitrary
+of fine-grained cluster computed values, with a coordinating mechanism akin to swarimiji.
+This allows for general purpose distributed computation, but the preferred and likely
+most efficient model is to simply map work to the cluser and have the client collect results.
+
+*** Limitations
+**** Dynamic repl invocations and symbol resolution
+This library affords a degree of live-coding and interactivity, with the eventual
+goal of being able to have (effectively) a distributed REPL.  To that end, it is
+entirely possible to interactively replace work done with e.g. pmap or map and
+offload that work to the cluster IFF:
+
+- All symbols can be resolved by each peer.
+- All anonymous functions have been AOT compiled and share the same class names on each peer.
+
+Due to the nature of the clojure compiler, when we evaluate functions and other
+forms, one or more new classes are emitted behind the scenes. A function
+invocation is really just a method invocation on a static class. These class
+names are automatically generated and are not deterministic. So it is possible
+that if we dynamically read and eval clojure source code on 2 different peers
+(as most clojure is shipped in source form), we may end up with different class
+names for the same function (particularly anonymous functiions).
+
+The good news is that if we stick to known symbols (e.g. namespace qualified symbols from
+things like def/defn), then our invocations are portable and should work fine.  The peer
+will look up the qualified symbol to resolve its peer-local function (and effectively a semantically
+identical but potentially  differently-named class), then everything is fine.
+
+So, this vanilla clojure expression (which uses only clojure.core functions) will work perfectly fine:
+
+#+BEGIN_SRC clojure
+user=> (client/fmap inc (range 10))
+(1 2 3 4 5 6 7 8 9 10)
+#+END_SRC
+
+where any function that cannot be resolved will throw:
+
+#+BEGIN_SRC clojure
+user=> (client/fmap (fn [x] (+ x 1)) (range 10))
+Error printing return value (ClassNotFoundException) at java.net.URLClassLoader/findClass (URLClassLoader.java:382).
+user$eval2314$fn__2315
+#+END_SRC
+
+
+**** Anonymous Function Work-Around
+I explored (and continue to) explore some work arounds to enable a truly live experience, since
+we tend to like to pass anonymous functions a lot or inline them.  For now, the best option is to
+AOT compile any namespaces that you plan to use e.g. as services, then distribute the classes (typically
+as an uberjar) for use with the peers.  One simple model is to define a common namespace (with anonymous
+functions and otherwise), that all peers are expected to have on the classpath.  After AOT compiling
+(e.g. as an uberjar), any peer starting from that uberjar is guaranteed to have the same classes
+since they are using the same artifact.
+
+For live-patching and treating the cluster as a distributed, synchronized repl, you can leverage
+the earlier examples using compile-all! .   I plan to provide some syntax sugar or macro wrappers to
+make it look/feel exactly like the client's repl.
+
+Note: any peer that arrives after you start patching the cluster will necessarily be "behind" in the
+shared knowledge of the cluster.  One strategy to work around this is to keep and patches in a separate
+clj file.  This clj file can be loaded by all peers simply by eval or compiling a (load-file "path-to-file.clj")
+command.  If nothing is stateful, it would have the effect of resynching every machine to the same
+ground truth.
+
+
+*** Additional Functionality
+
+TBD (logging, comms, evaluation, hotloading, data structures, etc.)
+
+
+** License
+
+Copyright © 2021 Joinr
+
+This program and the accompanying materials are made available under the
+terms of the Eclipse Public License 2.0 which is available at
+http://www.eclipse.org/legal/epl-2.0.
+
+This Source Code may also be made available under the following Secondary
+Licenses when the conditions for such availability set forth in the Eclipse
+Public License, v. 2.0 are satisfied: GNU General Public License as published by
+the Free Software Foundation, either version 2 of the License, or (at your
+option) any later version, with the GNU Classpath Exception which is available
+at https://www.gnu.org/software/classpath/license.html.
