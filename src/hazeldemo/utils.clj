@@ -44,6 +44,31 @@
 
 (alter-var-root #'unstring memo-1)
 
+;;we need to pack clojure data, especially for function args,
+;;when we send stuff over the wire.  under java.io.Serializable,
+;;false gets boxed to (Boolean. false), and clojure will treat it
+;;as truthy (since it's not Boolean/FALSE, and clojure has no intention of
+;;changing this behavior.)
+
+;;The solution is simple: nippy provides the correct behavior.  So we
+;;wrap our data in a map (which is java.io.Serializabl), and pack the
+;;contents through nippy as a byte array.
+
+;;When we deserialize on the other side, we unpack the contents.
+;;We may want to locally cache this if it's expensive, but for now
+;;I don't care.  This preserves any true/false values that were
+;;present in the data.
+(defn pack [this]
+  {:contents  (nippy/freeze this)})
+
+(defn unpack [this]
+  (nippy/thaw (this :contents)))
+
+(defn round-trip-pack [in]
+  (->> in pack serialize deserialize unpack))
+
+(defn round-trip-jis [in]
+  (->> in serialize deserialize))
 
 (defprotocol IRemote
   (as-function [this] "coerces arg into an invokable function"))
