@@ -473,7 +473,7 @@
 ;;   an project that using util/as-function to have the clients
 ;;   resolve on their end and apply.
 
-;;c) if it's anonymous, we can serialize it with nippy,
+;;c) if it's anonymous, we can serialize it with nippy,x
 ;;   have the clients deserialize it and apply on their end.
 ;;   if we are chewing a bunch of tasks, maybe we don't want
 ;;   to constantly deserialize the function....
@@ -507,8 +507,8 @@
         step (fn step [[x & xs :as vs] fs]
                (lazy-seq
                 (if-let [s (seq fs)]
-                  (cons (deref x) (step xs (rest s)))
-                  (map deref vs))))]
+                  (cons (u/unpack (deref x)) (step xs (rest s)))
+                  (map (comp u/unpack deref) vs))))]
     (step rets (drop n rets))))
 
 (defn fmap2
