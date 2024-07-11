@@ -478,7 +478,7 @@
 ;;   if we are chewing a bunch of tasks, maybe we don't want
 ;;   to constantly deserialize the function....
 
-(defn fmap [f coll]
+(defn fmap-old [f coll]
   (let [n    10
         rets (map #(ch/ftask  (partial f %)) coll)
         step (fn step [[x & xs :as vs] fs]
@@ -488,9 +488,34 @@
                   (map deref vs))))]
     (step rets (drop n rets))))
 
+#_
 (defn fmap2
   ([n size f coll]
    (let [rets (map #(ch/ftask  (partial mapv f %)) (partition size coll))
+         step (fn step [[x & xs :as vs] fs]
+                (lazy-seq
+                 (if-let [s (seq fs)]
+                   (concat (deref x) (step xs (rest s)))
+                   (mapcat deref vs))))]
+     (step rets (drop n rets)))))
+
+(defn fmap [f coll]
+  (let [n    10
+        rets (map (fn [x]
+                    (let [in (u/pack x)]
+                      (ch/ftask (partial u/packed-call f in)))) coll)
+        step (fn step [[x & xs :as vs] fs]
+               (lazy-seq
+                (if-let [s (seq fs)]
+                  (cons (deref x) (step xs (rest s)))
+                  (map deref vs))))]
+    (step rets (drop n rets))))
+
+(defn fmap2
+  ([n size f coll]
+   (let [rets (map (fn [x]
+                     (let [in (u/pack x)]
+                       (ch/ftask (partial u/packed-call f in)))) (partition size coll))
          step (fn step [[x & xs :as vs] fs]
                 (lazy-seq
                  (if-let [s (seq fs)]
@@ -582,6 +607,6 @@
 )
 
 ;;simple remote eval:
-(cosmment
+(comment
   (def res (invoke 'eval ['(+ 2 3)]))
   )

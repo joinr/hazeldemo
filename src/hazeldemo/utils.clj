@@ -64,11 +64,7 @@
 (defn unpack [this]
   (nippy/thaw (this :contents)))
 
-(defn round-trip-pack [in]
-  (->> in pack serialize deserialize unpack))
-
-(defn round-trip-jis [in]
-  (->> in serialize deserialize))
+(defn packed-call [f arg] (f (unpack arg)))
 
 (defprotocol IRemote
   (as-function [this] "coerces arg into an invokable function"))
