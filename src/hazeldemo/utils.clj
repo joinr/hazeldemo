@@ -64,7 +64,7 @@
 (defn unpack [this]
   (nippy/thaw (this :contents)))
 
-(defn packed-call [f arg] (f (unpack arg)))
+(defn packed-call [f arg] (pack (f (unpack arg))))
 
 (defprotocol IRemote
   (as-function [this] "coerces arg into an invokable function"))
