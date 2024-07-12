@@ -478,6 +478,7 @@
 ;;   if we are chewing a bunch of tasks, maybe we don't want
 ;;   to constantly deserialize the function....
 
+#_
 (defn fmap-old [f coll]
   (let [n    10
         rets (map #(ch/ftask  (partial f %)) coll)
@@ -499,6 +500,11 @@
                    (mapcat deref vs))))]
      (step rets (drop n rets)))))
 
+;;we define new versions of fmap that use nippy for serialization.
+;;this wraps the input arg in a map with contents that are serialized
+;;by nippy.  The function invocation then unpacks the contents and applies
+;;the function to the arg, then packs the result.  This allows us to
+;;bypass the problem of Boolean/FALSE serialization problems.
 (defn fmap [f coll]
   (let [n    10
         rets (map (fn [x]
@@ -519,8 +525,8 @@
          step (fn step [[x & xs :as vs] fs]
                 (lazy-seq
                  (if-let [s (seq fs)]
-                   (concat (deref x) (step xs (rest s)))
-                   (mapcat deref vs))))]
+                   (concat (u/unpack (deref x)) (step xs (rest s)))
+                   (mapcat (comp u/unpack deref) vs))))]
      (step rets (drop n rets)))))
 
 
