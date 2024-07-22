@@ -10,4 +10,7 @@
                  [com.hazelcast/hazelcast-aws "3.4"]
                  [spork "0.2.1.4-SNAPSHOT"
                   :exclusions [com.taoensso/nippy]]
-                 [com.rpl/nippy-serializable-fns "0.4.2"]])
+                 [com.rpl/nippy-serializable-fns "0.4.2"
+                  :exclusions [com.taoensso/nippy]]
+                 [com.taoensso/nippy "2.15.3"]
+                 ])
