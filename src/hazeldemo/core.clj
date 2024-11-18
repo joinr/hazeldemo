@@ -126,26 +126,37 @@
 ;;and look to see if more work remains, repeating until the queue
 ;;is empty.
 
+(def cache (atom {}))
+
+;;initialize a listener for the log concurrent with creation.
+(defn get-log
+  ([source]
+   (or (get-object source :log)
+       (let [log    (ch/hz-reliable-topic  :log)
+            log-id (ch/add-message-listener log (fn [msg] (println [:LOG msg])))
+            _ (swap! cache assoc :log-listener log-id)]
+        log)))
+  ([] (get-log (get-cluster))))
+
 ;;message topic to indicate work arrived and the
 ;;job queue needs to be drained by workers.
-(def arrived
-  (or (get-object :arrived)
-      (ch/hz-reliable-topic :arrived)))
-
-(def jobs
-  (or (get-object :jobs)
-      (ch/hz-queue :jobs)))
-
-(def results
-  (or (get-object :results)
-      (ch/hz-map :results)))
-
-(def log
-  (or (get-object :log)
-      (ch/hz-reliable-topic :log)))
-
-;;need a way to clear message listeners (this provides guid for clearing)
-(defonce log-id (ch/add-message-listener log (fn [msg] (println [:LOG msg]))))
+(defn get-comms
+  ([source item]
+   (case item
+     :arrived (or (get-object source :arrived)
+                  (ch/hz-reliable-topic  :arrived))
+     :jobs (or (get-object source :jobs)
+               (ch/hz-queue  :jobs))
+     :log (get-log source)
+     ;;for our purposes, we can simulate promises with a map where
+     ;;the "channel" is a guid key and an entry.
+     ;;We can add an entry listener to determine when known entries show up/
+     ;;are delivered.  When they appear we can then deliver the promise (or close
+     ;;a channel if we want the core.async model...)
+     :results (or (get-object :results)
+                  (ch/hz-map :results))
+     (throw (ex-info "unknown comms item" {:in item}))))
+  ([item] (get-comms (get-cluster) item)))
 
 (defonce log-chan (async/chan (async/dropping-buffer 1)))
 (def stdout *out*)
@@ -158,15 +169,14 @@
 (defn log! [msg]
   (async/put! log-chan msg))
 
-;;for our purposes, we can simulate promises with a map where
-;;the "channel" is a guid key and an entry.
-;;We can add an entry listener to determine when known entries show up/
-;;are delivered.  When they appear we can then deliver the promise (or close
-;;a channel if we want the core.async model...)
-(def results
-  (or (get-object :results)
-      (ch/hz-map :results)))
+(defn ->cluster-logger []
+  (let [log (get-log)]
+    (fn [msg] (chazel.core/publish log msg))))
 
+;;enable aot without initializing cluster.
+(let [logf (delay (->cluster-logger))]
+  (defn log-cluster [msg]
+    (@logf msg)))
 
 ;;The lifecycle of requesting an invocation and awaiting a response
 ;;is like Amit's implementation, instead we use the distributed map
@@ -229,17 +239,17 @@
    (let [^java.util.concurrent.BlockingQueue jobs
          (if (instance? java.util.concurrent.BlockingQueue jobs) ;;allow callers to pass in queue.
            jobs
-           (get-object source jobs))]
+           (get-object source jobs))
+         arrived (get-comms source :arrived)]
    (if jobs
      (do (.put jobs m)
          (ch/publish arrived {:new-work id})
          1)
      (throw (ex-info "cannot find jobs queue on source" {:source source :args m})))))
-  ([data] (request-job! *cluster* :jobs data)))
+  ([data] (request-job! (get-cluster) :jobs data)))
 
 ;;if we rewrite request-job into request-jobs, and implement the singleton
 ;;version on top of it.
-
 
 ;;here we provide a batched operation that uses putAll
 (defn request-jobs!
@@ -247,7 +257,8 @@
    (let [^java.util.concurrent.BlockingQueue jobs
          (if (instance? java.util.concurrent.BlockingQueue jobs) ;;allow callers to pass in queue.
            jobs
-           (get-object source jobs))]
+           (get-object source jobs))
+         arrived (get-comms source :arrived)]
      (if jobs
        (let [total (reduce (fn [acc part]
                              (.addAll jobs part)
@@ -296,13 +307,13 @@
         res   (case (data :type)
                 :add    (apply + args)
                 :ping   (println "ping!")
-                :log    (ch/publish log args)
+                :log    (ch/publish (get-comms :log) args)
                 :invoke (let [[fname  params] args]
                           (try (apply (u/as-function fname) params)
                                (catch Exception e e))))]
     (when response ;;we can overload this to allow us to push to queues easily.
       (case response-type
-        (nil :map) (.put ^java.util.Map results response res)
+        (nil :map) (.put ^java.util.Map (get-comms :results) response res)
         :queue     (.put ^java.util.concurrent.BlockingQueue (ch/hz-queue id (get-cluster)) res)
         (throw (ex-info "unknown response-type!" {:response-type response-type :in job}))))
     res))
