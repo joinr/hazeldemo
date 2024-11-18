@@ -13,12 +13,80 @@
 ;;I think we can alleviate the burden of client lifecycling
 ;;a bit by retaining a persistent client and defaulting to it.
 
-(defonce me (ch/client-instance core/+config+) )
+(defonce me (delay (ch/client-instance core/+config+)))
 (def ^:dynamic *client* me)
 
+;;helper wrapper to allow us to have delayed instantiation.
+(defn get-client ^com.hazelcast.core.HazelcastInstance []
+  (if (delay? *client*)
+    (deref *client*)
+    *client*))
+
 (defmacro on-cluster [& body]
-  `(binding [~'hazeldemo.core/*cluster* *client*]
+  `(binding [~'hazeldemo.core/*cluster* (~'hazeldemo.client/get-client)]
      ~@body))
+
+;;use executor service implementation....see if this is faster,
+;;examine downsides.
+;;This is about 73x faster than the queue-based implementation,
+;;around 50x slower than in-memory pmap (2570x slower than single-core map...).
+;;The problem we have here, is that if f is an anonymous function, we fail.
+;;Since the classname for anony functions are not consistent across the cluster,
+;;we need a way to resolve them (where currently partial is used to make thunks).
+
+;;a) we can detect if f is a function, and if it's anonymous.
+
+;;b) if it's not, we can lift it into the function's qualified name
+;;   an project that using util/as-function to have the clients
+;;   resolve on their end and apply.
+
+;;c) if it's anonymous, we can serialize it with nippy,x
+;;   have the clients deserialize it and apply on their end.
+;;   if we are chewing a bunch of tasks, maybe we don't want
+;;   to constantly deserialize the function....
+
+;;we define new versions of fmap that use nippy for serialization.
+;;this wraps the input arg in a map with contents that are serialized
+;;by nippy.  The function invocation then unpacks the contents and applies
+;;the function to the arg, then packs the result.  This allows us to
+;;bypass the problem of Boolean/FALSE serialization problems.
+(defn fmap [f coll]
+  (let [n    10
+        rets (map (fn [x]
+                    (let [in (u/pack x)]
+                      (ch/ftask (partial u/packed-call f in)))) coll)
+        step (fn step [[x & xs :as vs] fs]
+               (lazy-seq
+                (if-let [s (seq fs)]
+                  (cons (u/unpack (deref x)) (step xs (rest s)))
+                  (map (comp u/unpack deref) vs))))]
+    (step rets (drop n rets))))
+
+(defn fmap2
+  ([n size f coll]
+   (let [rets (map (fn [x]
+                     (let [in (u/pack x)]
+                       (ch/ftask (partial u/packed-call f in)))) (partition size coll))
+         step (fn step [[x & xs :as vs] fs]
+                (lazy-seq
+                 (if-let [s (seq fs)]
+                   (concat (u/unpack (deref x)) (step xs (rest s)))
+                   (mapcat (comp u/unpack deref) vs))))]
+     (step rets (drop n rets)))))
+
+;;control plane for evaluation and load, cluster-wide by default.
+(defn eval-all! [expr]
+  (let [res (ch/ftask (partial eval expr) :members :all)]
+    (doseq [[m v] res]
+      (println [m @v]))))
+
+(defn compile-all! [expr]
+  (let [res (ch/ftask (partial apply hazeldemo.utils/compile* expr) :members :all)]
+    (doseq [[m v] res]
+      (println [m @v]))))
+
+;;LEGACY / SLOW
+;;=============
 
 ;;all of these are going to be client side I think...
 (def ^:dynamic *pending* (ref {}))
@@ -40,7 +108,7 @@
       (core/request-job! source {:id some-id :data {:type :invoke :args [f args]} :response some-id})
       (alter *pending* assoc some-id result)
       result)))
-  ([f args] (invoke core/*cluster* f args)))
+  ([f args] (invoke (core/get-cluster) f args)))
 
 ;;we can also have a separate invocation protocol.
 ;;instead of the promisory mechanism, work can be invoked on a work-queue.
@@ -54,7 +122,7 @@
   ([source id f args]
    (core/request-job! source
                       {:id id :data {:type :invoke :args [f args]} :response id :response-type :queue}))
-  ([id f args] (invoke-send *client* id f args)))
+  ([id f args] (invoke-send (get-client) id f args)))
 
 ;;In this case, we get a direct abstraction between channels/queues.  I don't think
 ;;it makes sense for 1-off channels though because we end up with a lot of distributed
@@ -186,7 +254,7 @@
                       (map deref)
                       (doall)))))
   ([f xs]
-   (dmap *client* f xs)))
+   (dmap (get-client) f xs)))
 
 (comment
   (def xs (future (dmap inc (range 10))))
@@ -311,37 +379,6 @@
   ([source id] (cluster-channel-in source id nil)))
 
 
-
-;;working
-(comment
-  (def result-chan (dmap> inc (range 10)))
-  ;;coerces work to be executed (manually, normally workers
-  ;;would be doing this in a thread)
-  (core/poll-queue!! core/do-job 1 core/jobs)
-  (a/into [] result-chan))
-
-
-;;with a worker...
-(comment
-  (def result-chan (dmap> inc (range 100)))
-  ;;coerces work to be executed (manually, normally workers
-  ;;would be doing this in a thread)
-  (<!! (a/into [] result-chan))
-  )
-
-(comment
-  (->> (range 100)
-       (dmap! inc)))
-
-
-#_
-(->> (range 100)
-     (map (fn [x] (read-string "(rand-int 100)")))
-     (dmap! *client* clojure.core/eval)
-     (a/into [])
-     <!!)
-
-
 ;;let's create another way to do this for testing.
 ;;lower level, simpler.
 (defn dmap-future
@@ -371,7 +408,7 @@
                       (conj acc x)))
              (do (core/destroy! source id)
                  acc)))))))
-  ([f xs] (dmap-future *client* f xs)))
+  ([f xs] (dmap-future (get-client) f xs)))
 
 (defn dmap>
   "Like dmap! but provides a channel where results may be consumed as they are produced."
@@ -399,13 +436,13 @@
              (do (core/destroy! source id)
                  (a/close! out))))))
      out))
-  ([f xs] (dmap> *client* f xs)))
+  ([f xs] (dmap> (get-client) f xs)))
 
 (defn dmap!
   ([source f xs]
    (->> (dmap-future source f xs)
         deref))
-  ([f xs] (dmap! *client* f xs)))
+  ([f xs] (dmap! (get-client) f xs)))
 
 
 (defn drain!
@@ -446,7 +483,7 @@
                      :else (recur (- n k) acc)))
              (do (core/destroy! source id)
                  acc)))))))
-  ([f xs] (dmap-future-batch *client* f xs)))
+  ([f xs] (dmap-future-batch (get-client) f xs)))
 
 ;;possibly more elegant, using channels, no waiting on promises, some extra
 ;;copying though.  Might be able to eliminate extra copies if we
@@ -457,162 +494,13 @@
   ([source f xs]
    (->> (dmap-future-batch source f xs)
         deref))
-  ([f xs] (dmap!! *client* f xs)))
-
-;;use executor service implementation....see if this is faster,
-;;examine downsides.
-;;This is about 73x faster than the queue-based implementation,
-;;around 50x slower than in-memory pmap (2570x slower than single-core map...).
-;;The problem we have here, is that if f is an anonymous function, we fail.
-;;Since the classname for anony functions are not consistent across the cluster,
-;;we need a way to resolve them (where currently partial is used to make thunks).
-
-;;a) we can detect if f is a function, and if it's anonymous.
-
-;;b) if it's not, we can lift it into the function's qualified name
-;;   an project that using util/as-function to have the clients
-;;   resolve on their end and apply.
-
-;;c) if it's anonymous, we can serialize it with nippy,x
-;;   have the clients deserialize it and apply on their end.
-;;   if we are chewing a bunch of tasks, maybe we don't want
-;;   to constantly deserialize the function....
-
-#_
-(defn fmap-old [f coll]
-  (let [n    10
-        rets (map #(ch/ftask  (partial f %)) coll)
-        step (fn step [[x & xs :as vs] fs]
-               (lazy-seq
-                (if-let [s (seq fs)]
-                  (cons (deref x) (step xs (rest s)))
-                  (map deref vs))))]
-    (step rets (drop n rets))))
-
-#_
-(defn fmap2
-  ([n size f coll]
-   (let [rets (map #(ch/ftask  (partial mapv f %)) (partition size coll))
-         step (fn step [[x & xs :as vs] fs]
-                (lazy-seq
-                 (if-let [s (seq fs)]
-                   (concat (deref x) (step xs (rest s)))
-                   (mapcat deref vs))))]
-     (step rets (drop n rets)))))
-
-;;we define new versions of fmap that use nippy for serialization.
-;;this wraps the input arg in a map with contents that are serialized
-;;by nippy.  The function invocation then unpacks the contents and applies
-;;the function to the arg, then packs the result.  This allows us to
-;;bypass the problem of Boolean/FALSE serialization problems.
-(defn fmap [f coll]
-  (let [n    10
-        rets (map (fn [x]
-                    (let [in (u/pack x)]
-                      (ch/ftask (partial u/packed-call f in)))) coll)
-        step (fn step [[x & xs :as vs] fs]
-               (lazy-seq
-                (if-let [s (seq fs)]
-                  (cons (u/unpack (deref x)) (step xs (rest s)))
-                  (map (comp u/unpack deref) vs))))]
-    (step rets (drop n rets))))
-
-(defn fmap2
-  ([n size f coll]
-   (let [rets (map (fn [x]
-                     (let [in (u/pack x)]
-                       (ch/ftask (partial u/packed-call f in)))) (partition size coll))
-         step (fn step [[x & xs :as vs] fs]
-                (lazy-seq
-                 (if-let [s (seq fs)]
-                   (concat (u/unpack (deref x)) (step xs (rest s)))
-                   (mapcat (comp u/unpack deref) vs))))]
-     (step rets (drop n rets)))))
+  ([f xs] (dmap!! (get-client) f xs)))
 
 
-;;control plane for evaluation and load, cluster-wide by default.
-
-(defn eval-all! [expr]
-  (let [res (ch/ftask (partial eval expr) :members :all)]
-    (doseq [[m v] res]
-      (println [m @v]))))
-
-(defn compile-all! [expr]
-  (let [res (ch/ftask (partial apply hazeldemo.utils/compile* expr) :members :all)]
-    (doseq [[m v] res]
-      (println [m @v]))))
 
 ;;playing with fmap
 (comment
   (defn noisy-inc [n]
-    (let [mem  (.. core/*cluster* getCluster getLocalMember str)]
+    (let [mem  (.. (core/get-cluster) getCluster getLocalMember str)]
       ))
-
-
-  )
-#_#_
-(defmacro get-f! [src]
-  `(if ~'f ~'f
-       (let [func# (eval ~src)]
-         (set! ~'f func#)
-         func#)))
-
-(defrecord psuedofn [^String src ^{:tag 'clojure.lang.IFn :volatile-mutable true} f]
-  clojure.lang.IFn
-  (invoke [this]
-    ((get-f! 'src)))
-  (invoke [this arg]
-    ((get-f! 'src) arg)))
-
-;;we also have issues with the client side bindings.  In some cases for legacy
-;;control flow, we uses bindings for nested stuff in the api.
-
-;;we want something like bound-fn, but with the semantics of resolving
-;;symbols if necessary.
-
-
-;;OBE research paths
-;;==================
-
-
-;;channel-based variants that failed stochastically.  Replaced with simpler
-;;direct queue-managed options.
-(comment
-  (defn dmap>
-  ([source f xs]
-   (let [fsym (u/symbolize f)
-         id   (keyword (str "queue-" (core/uuid))) ;;get-object was finnicky...
-         responses (atom 0)
-         stdout *out*
-         out  (cluster-channel-out source id
-               (map (fn [x] (swap! responses unchecked-inc)
-                      x)))
-         n    (reduce (fn [acc x]
-                        (invoke-send source id fsym [x])
-                        (unchecked-inc acc)) 0 xs)
-         ;;when no more are remaining we should close by sending a close signal.
-         _  (add-watch responses :close-chan
-                       (fn closer [acc k v0 v1]
-                         (when (= v1 n)
-                           (let [^java.util.concurrent.BlockingQueue
-                                 q (core/get-object source id)
-                                 ^java.util.Map
-                                 oc (core/get-object source :open-channels)]
-                             (.put q +closed+)
-                             (.remove oc id)))))]
-     out))
-  ([f xs] (dmap> *client* f xs)))
-
-(defn dmap!
-  ([source f xs]
-   (->> (dmap> source f xs)
-        (a/into [])
-        (<!!)))
-  ([f xs] (dmap! *client* f xs)))
-
-)
-
-;;simple remote eval:
-(comment
-  (def res (invoke 'eval ['(+ 2 3)]))
   )

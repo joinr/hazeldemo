@@ -14,10 +14,18 @@
        (binding [*out* out]
          (println ["Uncaught Exception on" (.getName thread) ex]))))))
 
-(defonce me   (cfg/new-instance "dev"))
-(defonce addr (str (.. me getLocalEndpoint getSocketAddress)))
+;;problem we have is new-instance being global.
+;;we'd like to not have this be global so aot doesn't get boffed.
+(defonce me   (delay (cfg/new-instance "dev")))
+(defonce addr (delay (str (.. me getLocalEndpoint getSocketAddress))))
 
 (def ^:dynamic *cluster* me)
+
+;;helper wrapper to allow us to have delayed instantiation.
+(defn get-cluster ^com.hazelcast.core.HazelcastInstance []
+  (if (delay? *cluster*)
+    (deref *cluster*)
+    *cluster*))
 
 ;;utils
 ;;=====
@@ -27,19 +35,19 @@
    (into {}
          (for [itm (ch/distributed-objects source)]
            [(keyword (.getName itm)) itm])))
-  ([] (get-objects *cluster*)))
+  ([] (get-objects (get-cluster))))
 
 
 ;;looks for jobs topic
 (defn get-object
   ([source k] (-> source get-objects (get (u/unstring k))))
-  ([k] (get-object *cluster* k)))
+  ([k] (get-object (get-cluster) k)))
 
 (defn destroy!
   ([source k]
    (when-let [obj (get-object source k)]
      (.destroy obj)))
-  ([k] (destroy! *cluster* k)))
+  ([k] (destroy! (get-cluster) k)))
 
 ;;enables publish on client topics.
 (extend-type com.hazelcast.client.impl.proxy.ClientReliableTopicProxy
@@ -249,7 +257,7 @@
            (ch/publish arrived {:new-work (-> coll first :id)})
            total)
        (throw (ex-info "cannot find jobs queue on source" {:source source :args jobs})))))
-  ([data] (request-jobs! *cluster* :jobs data)))
+  ([data] (request-jobs! (get-cluster) :jobs data)))
 
 
 ;;we can wrap this up in a convenience macro.
@@ -295,11 +303,11 @@
     (when response ;;we can overload this to allow us to push to queues easily.
       (case response-type
         (nil :map) (.put ^java.util.Map results response res)
-        :queue     (.put ^java.util.concurrent.BlockingQueue (ch/hz-queue id *cluster*) res)
+        :queue     (.put ^java.util.concurrent.BlockingQueue (ch/hz-queue id (get-cluster)) res)
         (throw (ex-info "unknown response-type!" {:response-type response-type :in job}))))
     res))
 
 
 (defn get-member []
   (.. ^com.hazelcast.core.HazelcastInstance
-      *cluster* getCluster getLocalMember toString))
+      (get-cluster) getCluster getLocalMember toString))
