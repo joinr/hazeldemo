@@ -2,7 +2,8 @@
   (:require [chazel.core :as ch]
             [hazeldemo.utils :as u]
             [hazeldemo.config :as cfg]
-            [clojure.core.async :as async]))
+            [clojure.core.async :as async]
+            [potemkin :as pot]))
 
 ;;From Stuart Sierra's blog post, for catching otherwise "slient" exceptions
 ;;Since we're using multithreading and the like, and we don't want
@@ -14,10 +15,92 @@
        (binding [*out* out]
          (println ["Uncaught Exception on" (.getName thread) ex]))))))
 
+;;we just export all of chazel.core for convenience....
+(pot/import-vars
+ [chazel.core
+  #_#_#_#_
+  ->Ctask
+  ->Pages
+  ->Rtask
+  ->mtake
+  #_#_#_
+  Pageable
+  ReliableTopic
+  Topic
+  add-all!
+  add-entry-listener
+  add-index
+  add-member-attr
+  add-message-listener
+  add-reliable-listener
+  all-instances
+  #_
+  c-instance
+  cget
+  client-config
+  client-instance
+  client-instance?
+  cluster-of
+  cluster-stats
+  comp-keys
+  connect-to
+  delete!
+  distributed-objects
+  entry-added-listener
+  entry-evicted-listener
+  entry-expired-listener
+  entry-loaded-listener
+  entry-merged-listener
+  entry-removed-listener
+  entry-updated-listener
+  eviction-config
+  execution-callback
+  find-all-maps
+  ftask
+  hz-instance
+  hz-list
+  hz-map
+  hz-mmap
+  hz-name
+  hz-queue
+  hz-reliable-topic
+  instance-active?
+  #_
+  k->enum
+  local-member-by-instance
+  local-stats
+  map-sizes
+  message-listener
+  mtake
+  near-cache-config
+  #_
+  new-instance
+  next-page
+  preloader-config
+  publish
+  put!
+  put-all!
+  query-cache
+  reliable-message-listener
+  remove!
+  remove-entry-listener
+  remove-message-listener
+  #_#_
+  secrefy
+  select
+  set-default-exception-handler
+  shutdown
+  shutdown-client
+  task
+  #_
+  unproxy
+  with-near-cache
+  with-paging])
+
 ;;problem we have is new-instance being global.
 ;;we'd like to not have this be global so aot doesn't get boffed.
 (defonce me   (delay (cfg/new-instance "dev")))
-(defonce addr (delay (str (.. me getLocalEndpoint getSocketAddress))))
+(defonce addr (delay (str (.. @me getLocalEndpoint getSocketAddress))))
 
 (def ^:dynamic *cluster* me)
 
