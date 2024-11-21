@@ -214,6 +214,7 @@
                 :else (throw (ex-info "unknown instance arg type!" {:in id-or-map})))
         cl  (clojure.lang.RT/baseLoader)
         cfg (doto cfg (.setClassLoader cl))
+        _   (println [:serializing-with (.getClassLoader cfg)])
         res   (ch/new-instance cfg)
         m     (meta cfg)]
     (when-let [registry (and (m :register-on-join) (m :member-registry))]
