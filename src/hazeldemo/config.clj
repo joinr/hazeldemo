@@ -212,6 +212,8 @@
                       (do (.. cfg (setInstanceName id)) ;;merge id with local config.
                           cfg))))
                 :else (throw (ex-info "unknown instance arg type!" {:in id-or-map})))
+        cl (.getContextClassLoader (Thread/currentThread))
+        cfg (doto cfg (.setClassLoader cl))
         res   (ch/new-instance cfg)
         m     (meta cfg)]
     (when-let [registry (and (m :register-on-join) (m :member-registry))]
