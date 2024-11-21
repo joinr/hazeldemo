@@ -212,7 +212,7 @@
                       (do (.. cfg (setInstanceName id)) ;;merge id with local config.
                           cfg))))
                 :else (throw (ex-info "unknown instance arg type!" {:in id-or-map})))
-        cl (.getContextClassLoader (Thread/currentThread))
+        cl  (clojure.lang.RT/baseLoader)
         cfg (doto cfg (.setClassLoader cl))
         res   (ch/new-instance cfg)
         m     (meta cfg)]
