@@ -196,6 +196,15 @@
 ;;set it up that way too.
 
 
+(defn classloader-chain [cl]
+  (take-while identity (iterate #(.getParent %) cl)))
+
+(defn get-dynamic-cl []
+  (->> (clojure.lang.RT/baseLoader)
+       classloader-chain
+       (filter (fn [obj] (instance? clojure.lang.DynamicClassLoader obj)))
+       first))
+
 ;;derive based on env var HAZELCAST
 (defn new-instance [id-or-map]
   (let [cfg (cond
@@ -212,7 +221,8 @@
                       (do (.. cfg (setInstanceName id)) ;;merge id with local config.
                           cfg))))
                 :else (throw (ex-info "unknown instance arg type!" {:in id-or-map})))
-        cl  (clojure.lang.RT/baseLoader)
+        cl  (or (get-dynamic-cl)
+                (throw (ex-info "no dynamic classloader!?!?" {:in (classloader-chain)})))
         cfg (doto cfg (.setClassLoader cl))
         _   (println [:serializing-with (.getClassLoader cfg)])
         res   (ch/new-instance cfg)
