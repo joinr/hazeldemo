@@ -74,6 +74,71 @@
                    (mapcat (comp u/unpack deref) vs))))]
      (step rets (drop n rets)))))
 
+;;we can define unordered-fmap.
+;;the fix with this is to use callbacks to deliver promises.
+;;We want work stealing with backpressure.
+;;So let the cluster farm work, use a callback to post results locally
+;;to the results queue.
+;;Then pull them off.
+;;In theory, we have a pmap implementation with backpressure.
+;;Can use a standard core.async loop.
+
+;;https://gist.github.com/stathissideris/8659706
+(defn seq!!
+  "Returns a (blocking!) lazy sequence read from a channel.  Throws on err values" 
+  [c]
+  (lazy-seq
+   (when-let [v (a/<!! c)]
+     (if (instance? Throwable v)
+       (throw v)
+       (cons v (seq!! c))))))
+
+(defn producer->consumer!! [n out f jobs]
+  (let [;jobs    (async/chan 10)
+        done?   (atom 0)
+        res     (async/chan n)
+        workers (dotimes [i n]
+                  (async/thread
+                    (loop []
+                      (if-let [nxt (async/<!! jobs)]
+                        (let [res (f nxt)
+                              _   (async/>!! out res)]
+                          (recur))
+                        (let [ndone (swap! done? inc)]
+                          (when (= ndone n)
+                            (do (async/close! out)
+                                (async/>!! res true))))))))]
+    res))
+
+;;unordered map across a cluster.
+;;we use callbacks for backpressure.
+(defn ufmap
+  ([n f coll]
+   (let [pending  (atom 0)
+         consumed (atom nil)
+         res (a/chan n)
+         push-result (fn push-result [x]
+                       (let [v (u/unpack x)
+                             nxt (swap! pending unchecked-dec)]
+                        (a/put! res v)
+                        (when (and @consumed (zero? nxt))
+                          (a/close! res))))
+        ins     (a/chan n)
+        _    (a/go-loop []
+               (if-let [x (a/<! ins)]
+                 (let [in (u/pack x)]
+                   (swap! pending unchecked-inc) ;;meh
+                   (ch/ftask (partial u/packed-call f in)
+                     :callback {:on-response push-result
+                                :on-failure  (fn [ex]
+                                               (println [:bombed :closing])
+                                               (a/close! res))})
+                   (recur))
+                 (reset! consumed true)))
+        jobs (a/onto-chan!! ins coll)]
+     (seq!! res)))
+  ([f coll] (ufmap 100 f coll)))
+
 ;;control plane for evaluation and load, cluster-wide by default.
 (defn eval-all! [expr]
   (let [res (ch/ftask (partial eval expr) :members :all)]
