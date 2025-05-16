@@ -93,22 +93,22 @@
        (throw v)
        (cons v (seq!! c))))))
 
-(defn producer->consumer!! [n out f jobs]
-  (let [;jobs    (async/chan 10)
-        done?   (atom 0)
-        res     (async/chan n)
-        workers (dotimes [i n]
-                  (async/thread
-                    (loop []
-                      (if-let [nxt (async/<!! jobs)]
-                        (let [res (f nxt)
-                              _   (async/>!! out res)]
-                          (recur))
-                        (let [ndone (swap! done? inc)]
-                          (when (= ndone n)
-                            (do (async/close! out)
-                                (async/>!! res true))))))))]
-    res))
+;; (defn producer->consumer!! [n out f jobs]
+;;   (let [;jobs    (a/chan 10)
+;;         done?   (atom 0)
+;;         res     (a/chan n)
+;;         workers (dotimes [i n]
+;;                   (a/thread
+;;                     (loop []
+;;                       (if-let [nxt (a/<!! jobs)]
+;;                         (let [res (f nxt)
+;;                               _   (a/>!! out res)]
+;;                           (recur))
+;;                         (let [ndone (swap! done? inc)]
+;;                           (when (= ndone n)
+;;                             (do (a/close! out)
+;;                                 (a/>!! res true))))))))]
+;;     res))
 
 ;;unordered map across a cluster.
 ;;we use callbacks for backpressure.
